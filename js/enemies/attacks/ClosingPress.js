@@ -47,7 +47,7 @@ class ClosingPressAttack extends Enemy {
       w2.lastOut = out;
       w2.off = off;
     }
-    if (CLOCK.frame % 3 === 0 && this.walls[0].off > 6) {
+    if (CLOCK.frame % 5 === 0 && this.walls[0].off > 6) {
       this.game.bullets.spawnParticle({
         x: this.walls[0].side < 0 ? this.walls[0].off : this.w - this.walls[0].off,
         y: rnd(0.1, 0.9) * this.h,
@@ -72,18 +72,19 @@ class ClosingPressAttack extends Enemy {
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,0.97)';
     ctx.fillRect(x, y, wdt, hgt);
-    // hatch only outside the gap
+    // hatch only outside the gap — one tiled pattern fill instead of
+    // hundreds of marker strokes (this attack was the frame-time hog)
     ctx.save();
     ctx.beginPath();
     ctx.rect(x, y, wdt, wall.gap.y0);
     ctx.rect(x, wall.gap.y0 + wall.gap.h, wdt, hgt - wall.gap.y0 - wall.gap.h);
     ctx.clip();
-    hatchRect(ctx, x, y, wdt, hgt, 9, s, {
-      angle: wall.side < 0 ? 0.7 : -0.7,
-      color: 'rgba(0,0,0,0.65)',
-      width: 2.4,
-      amp: 2
-    });
+    ctx.save();
+    const drift = (CLOCK.tick9 * 4.3) % 9;   // the hatch still creeps at 9 FPS
+    ctx.translate(wall.side < 0 ? drift : -drift, 0);
+    ctx.fillStyle = hatchPattern('rgba(0,0,0,0.65)', 2.4, 9, wall.side > 0);
+    ctx.fillRect(x - 9, y, wdt + 18, hgt);   // padded so drift never uncovers the wall
+    ctx.restore();
     ctx.restore();
 
     // rough edges

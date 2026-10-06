@@ -5,7 +5,7 @@
 
    EnemyFactory        — abstract base (cannot be instantiated,
                          declares the contract).
-   DoodleEnemyFactory  — concrete factory: registers all 20
+   DoodleEnemyFactory  — concrete factory: registers all 25
                          attack classes, reuses instances
                          (per-type free lists = zero allocation)
                          and performs weighted type selection.
@@ -132,4 +132,9 @@ function registerAllAttacks(factory) {
   factory.define('grid', AxisGridAttack, { label: 'AXIS GRID', family: 'field', unlock: 54, weight: 7 });
   factory.define('press', ClosingPressAttack, { label: 'CLOSING PRESS', family: 'field', unlock: 58, weight: 7 });
   factory.define('swarm', ChaoticSwarmAttack, { label: 'CHAOTIC SWARM', family: 'swarm', unlock: 62, weight: 8 });
+  factory.define('clock', ClockAttack, { label: 'CLOCKWORK', family: 'field', unlock: 56, weight: 6 });
+  factory.define('meteor', MeteorAttack, { label: 'METEOR', family: 'bullet', unlock: 60, weight: 6 });
+  factory.define('ghost', GhostAttack, { label: 'GHOSTLY WAIL', family: 'entity', unlock: 64, weight: 6 });
+  factory.define('tornado', TornadoAttack, { label: 'TORNADO', family: 'field', unlock: 68, weight: 6 });
+  factory.define('cannon', CannonAttack, { label: 'INK CANNON', family: 'bullet', unlock: 72, weight: 6 });
 }

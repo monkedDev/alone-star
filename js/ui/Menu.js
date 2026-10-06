@@ -2,15 +2,20 @@
 
 /* ============================================================
    MENU — "alone star" still-life art object.
-   • a happy hand-drawn star gently bounces and plays with a
-     tiny pulsar that hops around her on a lopsided orbit
-   • the star's eyes follow the pulsar; when it comes close
-     she squints in joy and her smile widens
+   • LEFT COLUMN: every button lives here — START, the SKIP
+     start-second picker (0–90s, persisted), the NOCLIP toggle,
+     and a HOW TO SURVIVE block right beneath them.
+   • CENTRE-PIECE: a black hole is slowly pulling our star into
+     it — she spirals in on a smear-trail, eyes going wide, until
+     the next cycle drags her back out again. The star herself is
+     a fixed 2x of her standard in-game size. (mystery of space...)
    • strict 9 FPS wobble on every stroke (Menu is stepped on
      CLOCK.tick9 like the rest of the ink)
    • START button drawn with fat sloppy strokes; on hover its
      internal hatching runs around chaotically
    ============================================================ */
+
+const SKIP_MAX = 90;   // same as RELEASE_AT; skipping to 90 arms the release
 
 class Menu {
   constructor(game) {
@@ -18,27 +23,51 @@ class Menu {
     this.t = 0;
     this.hi = 0;
     this.hover = false;
+    this.hoverL = false;
+    this.hoverR = false;
     this.hover2 = false;
     this.blinkT = rnd(1.5, 3.5);
     this.blink = 0;
-    this.plTrail = [];          // the pulsar's hop trail
+    this.starTrail = [];          // the star's spiral smear into the hole
+    this.startSec = parseInt(localStorage.getItem('doodlehell.skip') || '0', 10) || 0;
+    this.startSec = clamp(this.startSec, 0, SKIP_MAX);
     this.glyphs = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 10; i++) {
       this.glyphs.push({ u: rnd(0.05, 0.95), v: rnd(0.08, 0.95), kind: rint(0, 4), seed: rnd(1000), drift: rnd(-0.01, 0.01) });
     }
   }
 
   layout() {
     const g = this.game;
-    const R = Math.min(g.w, g.h) * 0.17;
-    const cx = g.w / 2;
-    const cy = g.h * 0.42;
-    const btnY = Math.min(g.h - 300, cy + R * 1.7 + 54);
-    return {
-      cx, cy, R,
-      btn: { x: cx - 150, y: btnY, w: 300, h: 96 },
-      btn2: { x: cx - 130, y: btnY + 110, w: 260, h: 56 }  // NOCLIP toggle
+    const colW = Math.min(300, Math.max(178, g.w * 0.3));
+    const colX = Math.max(16, g.w * 0.04);
+    const R = Math.min(g.w, g.h) * 0.19;
+    const logo = {
+      cx: clamp(g.w * 0.56,
+        colX + colW + R + 40,
+        Math.max(colX + colW + R + 40, g.w - R * 1.35 - 28)),
+      cy: g.h * 0.44,
+      R
     };
+    const top = Math.max(56, g.h * 0.09);
+    return {
+      col: { x: colX, w: colW },
+      logo,
+      title: { cx: logo.cx, cy: logo.cy - R * 1.5 },
+      btn: { x: colX, y: top, w: colW, h: 60 },
+      skip: { x: colX, y: top + 82, w: colW, h: 54 },
+      skipL: { x: colX + 6, y: top + 86, w: 42, h: 46 },
+      skipR: { x: colX + colW - 48, y: top + 86, w: 42, h: 46 },
+      ruler: { x: colX, y: top + 150, w: colW },
+      btn2: { x: colX, y: top + 166, w: colW, h: 44 },
+      instr: { x: colX, y: top + 230, w: colW }
+    };
+  }
+
+  setStart(n) {
+    this.startSec = clamp(Math.round(n / 10) * 10, 0, SKIP_MAX);
+    try { localStorage.setItem('doodlehell.skip', String(this.startSec)); } catch (_) {}
+    this.game.notify('START FROM ' + this.startSec + 's');
   }
 
   /* ---------------- update ---------------- */
@@ -61,10 +90,14 @@ class Menu {
     const px = p.seen ? p.x : -999, py = p.seen ? p.y : -999;
     const inRect = (r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     this.hover = inRect(L.btn);
+    this.hoverL = inRect(L.skipL);
+    this.hoverR = inRect(L.skipR);
     this.hover2 = inRect(L.btn2);
 
     const startTapped = g.input.tapped('Enter') || g.input.tapped('Space');
-    if ((this.hover && p.justDown) || startTapped) g.start();
+    if ((this.hover && p.justDown) || startTapped) g.start(this.startSec);
+    else if (this.hoverL && p.justDown) this.setStart(this.startSec - 10);
+    else if (this.hoverR && p.justDown) this.setStart(this.startSec + 10);
     else if (this.hover2 && p.justDown) g.toggleNoclip();
   }
 
@@ -73,7 +106,6 @@ class Menu {
   draw(ctx) {
     const g = this.game;
     const L = this.layout();
-    const B = g.bullets;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -98,21 +130,19 @@ class Menu {
       }
     }
 
-    /* ------- the star playing with her tiny pulsar ------- */
+    /* ------- the black hole pulling our star in ------- */
     this.drawScene(ctx, L);
 
-    /* ---------- title ---------- */
-    doodleText(ctx, 'alone star', g.w / 2, L.cy - L.R - 62, 5 + CLOCK.tick9 * 0.1, Math.min(80, g.w / 10));
-    doodleText(ctx, 'a bullet hell in a notebook · monochrome inks', g.w / 2, L.cy - L.R - 14, 91 + CLOCK.tick9 * 0.1, 19, { color: 'rgba(0,0,0,0.6)', double: false });
+    /* ---------- title + the mystery ---------- */
+    doodleText(ctx, 'alone star', L.title.cx, L.title.cy, 5 + CLOCK.tick9 * 0.1, Math.min(78, g.w / 10));
+    doodleText(ctx, 'mystery of space...', L.title.cx, L.title.cy + 30, 91 + CLOCK.tick9 * 0.1, 21, { color: 'rgba(0,0,0,0.62)', double: false });
 
-    /* ---------- START button ---------- */
+    /* ---------- LEFT COLUMN: START button ---------- */
     const b = L.btn;
     ctx.save();
-    // white plate so the scene doesn't eat the button
     ctx.fillStyle = 'rgba(255,255,255,0.92)';
     ctx.fillRect(b.x - 6, b.y - 6, b.w + 12, b.h + 12);
 
-    // chaotic hatching on hover — re-offset every 9 FPS tick
     if (this.hover) {
       hatchRect(ctx, b.x + 4, b.y + 4, b.w - 8, b.h - 8, 9, this.t * 100, {
         angle: 0.85 + Math.sin(this.t * 4.2) * 0.4,
@@ -121,7 +151,6 @@ class Menu {
         amp: 2.2,
         offset: (CLOCK.tick9 * 4.3) % 9
       });
-      // random extra slashes each tick
       if (chance(0.6)) {
         ctx.strokeStyle = 'rgba(0,0,0,0.5)';
         ctx.lineWidth = 3;
@@ -130,7 +159,6 @@ class Menu {
       }
     }
 
-    // fat sloppy border (three overlapping strokes)
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 9;
     roughRect(ctx, b.x, b.y, b.w, b.h, 13, 4);
@@ -139,7 +167,58 @@ class Menu {
     ctx.lineWidth = 2.5;
     roughRect(ctx, b.x - 3, b.y + 3, b.w + 6, b.h - 6, 47, 6);
 
-    doodleText(ctx, 'START', b.x + b.w / 2, b.y + b.h / 2, 7 + CLOCK.tick9 * 0.23, 48);
+    doodleText(ctx, 'START', b.x + b.w / 2, b.y + b.h / 2, 7 + CLOCK.tick9 * 0.23, 42);
+    ctx.restore();
+
+    /* ---------- SKIP start-second picker ---------- */
+    const s = L.skip;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillRect(s.x - 6, s.y - 6, s.w + 12, s.h + 12);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 5;
+    roughRect(ctx, s.x, s.y, s.w, s.h, 67, 3);
+    ctx.lineWidth = 2;
+    roughRect(ctx, s.x + 2, s.y - 2, s.w - 4, s.h + 3, 83, 3.4);
+
+    // left / right step squares
+    for (const [r, ch, hov] of [[L.skipL, '◀', this.hoverL], [L.skipR, '▶', this.hoverR]]) {
+      ctx.save();
+      if (hov) {
+        hatchRect(ctx, r.x + 2, r.y + 2, r.w - 4, r.h - 4, 7, this.t * 90, {
+          color: 'rgba(0,0,0,0.28)', width: 2.2, amp: 2, offset: (CLOCK.tick9 * 3.7) % 7
+        });
+      }
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 3.4;
+      roughRect(ctx, r.x, r.y, r.w, r.h, 11, 2.6);
+      doodleText(ctx, ch, r.x + r.w / 2, r.y + r.h / 2, 13 + (ch === '◀' ? 0 : 7), 26, { color: 'rgba(0,0,0,0.85)' });
+      ctx.restore();
+    }
+
+    // the chosen second, big in the middle
+    doodleText(ctx, 'START FROM', s.x + s.w / 2, s.y + 12, 97, 12, { color: 'rgba(0,0,0,0.5)', double: false });
+    doodleText(ctx, this.startSec + 's', s.x + s.w / 2, s.y + 36, 101 + CLOCK.tick9 * 0.1, 26);
+    ctx.restore();
+
+    // tiny ruler under the picker: taps = 0/30/60/90
+    const rl = L.ruler;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2;
+    roughLine(ctx, rl.x + 4, rl.y, rl.x + rl.w - 4, rl.y, 121, 2);
+    for (let n = 0; n <= SKIP_MAX; n += 30) {
+      const tx = rl.x + 4 + (rl.w - 8) * (n / SKIP_MAX);
+      roughLine(ctx, tx, rl.y - 5, tx, rl.y + 5, 131 + n, 1.6);
+    }
+    const mx = rl.x + 4 + (rl.w - 8) * (this.startSec / SKIP_MAX);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.moveTo(mx - 6, rl.y - 6);
+    ctx.lineTo(mx + 6, rl.y - 6);
+    ctx.lineTo(mx, rl.y + 2);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
 
     /* ---------- NOCLIP toggle ---------- */
@@ -149,21 +228,13 @@ class Menu {
     ctx.fillRect(n.x - 6, n.y - 6, n.w + 12, n.h + 12);
 
     if (g.noclip) {
-      // armed: permanent grey hatch that still jitters at 9 FPS
       hatchRect(ctx, n.x + 3, n.y + 3, n.w - 6, n.h - 6, 8, 61 + CLOCK.tick9, {
-        angle: 0.9,
-        color: 'rgba(0,0,0,0.22)',
-        width: 2.2,
-        amp: 2,
-        offset: (CLOCK.tick9 * 3.7) % 8
+        angle: 0.9, color: 'rgba(0,0,0,0.22)', width: 2.2, amp: 2, offset: (CLOCK.tick9 * 3.7) % 8
       });
     } else if (this.hover2) {
       hatchRect(ctx, n.x + 3, n.y + 3, n.w - 6, n.h - 6, 8, this.t * 100, {
         angle: 0.85 + Math.sin(this.t * 4.2) * 0.4,
-        color: 'rgba(0,0,0,0.35)',
-        width: 2.4,
-        amp: 2.2,
-        offset: (CLOCK.tick9 * 4.3) % 8
+        color: 'rgba(0,0,0,0.35)', width: 2.4, amp: 2.2, offset: (CLOCK.tick9 * 4.3) % 8
       });
     }
 
@@ -174,60 +245,132 @@ class Menu {
     roughRect(ctx, n.x + 2, n.y - 2, n.w - 4, n.h + 3, 83, 4);
 
     doodleText(ctx, 'NOCLIP: ' + (g.noclip ? 'ON' : 'OFF'), n.x + n.w / 2, n.y + n.h / 2,
-      11 + CLOCK.tick9 * 0.19, 25, { color: g.noclip ? '#000' : 'rgba(0,0,0,0.8)' });
+      11 + CLOCK.tick9 * 0.19, 22, { color: g.noclip ? '#000' : 'rgba(0,0,0,0.8)' });
     ctx.restore();
 
-    /* ---------- hints & hi-score ---------- */
-    const hy = n.y + n.h;
-    doodleText(ctx, 'mouse / finger — the star follows instantly', g.w / 2, hy + 32, 17, 17, { color: 'rgba(0,0,0,0.55)', double: false });
-    doodleText(ctx, 'WASD · SPACE parry (0.2s / 10s cd) · P pause · N noclip', g.w / 2, hy + 58, 20, 17, { color: 'rgba(0,0,0,0.55)', double: false });
-    doodleText(ctx, 'R: retry — after 90s in hell it becomes RELEASE', g.w / 2, hy + 84, 24, 16, { color: 'rgba(0,0,0,0.55)', double: false });
+    /* ---------- HOW TO SURVIVE (same left column) ---------- */
+    const it = L.instr;
+    doodleText(ctx, 'HOW TO SURVIVE', it.x, it.y, 13, 15, { align: 'left', color: 'rgba(0,0,0,0.8)' });
+    const lines = [
+      'star follows mouse / finger',
+      'WASD · arrows — move · SPACE — parry',
+      'P pause · ESC menu · N noclip',
+      'R retry — at 90s it\'s RELEASE',
+      'SKIP — start from any second (0–90)'
+    ];
+    for (let i = 0; i < lines.length; i++) {
+      doodleText(ctx, lines[i], it.x + 2, it.y + 26 + i * 21, 17 + i * 7, 14, {
+        align: 'left', color: 'rgba(0,0,0,0.55)', double: false
+      });
+    }
     if (this.hi > 0) {
-      doodleText(ctx, 'BEST: ' + this.hi, g.w / 2, hy + 118, 31, 22, { color: 'rgba(0,0,0,0.75)' });
+      doodleText(ctx, 'BEST: ' + this.hi, it.x + 2, it.y + 26 + lines.length * 21 + 8, 31, 20, {
+        align: 'left', color: 'rgba(0,0,0,0.75)'
+      });
     }
   }
 
-  /* ------- the menu's still life: happy star + little pulsar ------- */
+  /* ------- the black hole + the star it is pulling in ------- */
 
   drawScene(ctx, L) {
     const t = this.t;
-    const R = L.R;
-    const s = R / 16;                     // star body is drawn in "hero" units (R=16)
+    const cx = L.logo.cx, cy = L.logo.cy, R = L.logo.R;
 
-    // the pulsar's playful lopsided orbit + excited hops
-    const ang = t * 1.15;
-    const orb = R * (0.52 + Math.sin(t * 2.4) * 0.09);
-    const hop = Math.abs(Math.sin(t * 3.4)) * R * 0.16;
-    const pp = {
-      x: L.cx + Math.cos(ang) * orb,
-      y: L.cy + Math.sin(ang) * orb * 0.6 - hop
-    };
+    // faint pull-field orbit ellipses around the hole
+    for (let i = 0; i < 3; i++) {
+      const rr = R * (1.55 + i * 0.45) + Math.sin(t * 0.9 + i * 1.4) * 4;
+      ctx.strokeStyle = 'rgba(0,0,0,0.10)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 14]);
+      roughEllipsePath(ctx, cx, cy, rr, rr * 0.5, 211 + i * 9, 0.2, 20);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
 
-    // soft playground shadow under the pair
-    ctx.fillStyle = 'rgba(0,0,0,0.06)';
-    ctx.beginPath();
-    ctx.ellipse(L.cx, L.cy + R * 0.95, R * 1.15, R * 0.28, 0, 0, TAU);
-    ctx.fill();
-
-    // dotted hop-trail left by the pulsar
-    this.plTrail.push({ x: pp.x, y: pp.y, r: R * 0.24 });
-    if (this.plTrail.length > 14) this.plTrail.shift();
-    for (let i = 0; i < this.plTrail.length; i++) {
-      const tr = this.plTrail[i];
-      const a = (i + 1) / this.plTrail.length;
-      ctx.strokeStyle = `rgba(0,0,0,${(0.32 * a).toFixed(2)})`;
-      ctx.lineWidth = 1.6;
-      roughCircle(ctx, tr.x, tr.y, tr.r * a, 503 + i * 7, 0.5, 6);
+    // grey haze
+    for (let i = 0; i < 3; i++) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)';
+      ctx.lineWidth = 6 + i * 3.4;
+      roughCircle(ctx, cx, cy, R * (1.02 + i * 0.4) + wob(221 + i, 6), 221 + i * 9, 0.22, 18);
     }
 
-    // the star bounces gently in place
-    const by = Math.sin(t * 2.6) * R * 0.05;
+    // rotating accretion spiral (the ink falling in)
+    const spin = t * 1.05;
+    for (let arm = 0; arm < 3; arm++) {
+      const pts = [];
+      for (let s = 0; s <= 36; s++) {
+        const k = s / 36;
+        const rr = R * 0.16 + k * R * 1.45;
+        const a = arm * TAU / 3 + k * 3.9 + spin;
+        pts.push({
+          x: cx + Math.cos(a) * rr + wob(231 + arm * 31 + s, 3),
+          y: cy + Math.sin(a) * rr * 0.62 + wob(231 + arm * 57 + s, 3)
+        });
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+      ctx.lineWidth = 8;
+      roughPath(ctx, pts, 233 + arm * 13, 2.4);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 3.4;
+      roughPath(ctx, pts, 237 + arm * 17 + 3, 2.2);
+    }
 
-    /* --- star body: slow happy spin, same two sloppy strokes as the hero --- */
+    // solid core + white chaos scribble inside
+    roughCirclePath(ctx, cx, cy, R * 0.36, 271, 0.26, 16);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 5; i++) {
+      const a1 = 231 + i * 93 + CLOCK.tick9 * 3;
+      const rr = R * 0.16;
+      roughLine(ctx, cx + Math.cos(a1) * rr, cy + Math.sin(a1) * rr,
+        cx - Math.cos(a1) * rr * 1.1, cy - Math.sin(a1) * rr * 1.1, 277 + i * 7, 3);
+    }
+
+    // pull chevrons sinking toward the horizon
+    for (let i = 0; i < 4; i++) {
+      const a = t * 0.55 + i * TAU / 4 + 0.55;
+      const rr = R * (0.95 + 0.2 * Math.sin(t * 1.9 + i * 2.1));
+      const x1 = cx + Math.cos(a) * rr, y1 = cy + Math.sin(a) * rr * 0.62;
+      const x2 = cx + Math.cos(a) * (rr - 11), y2 = cy + Math.sin(a) * (rr - 11) * 0.62;
+      const px = -Math.sin(a), py = Math.cos(a) * 0.62;
+      const f = 0.3 + 0.25 * Math.sin(t * 2.6 + i * 1.7);
+      ctx.strokeStyle = `rgba(0,0,0,${(0.12 + f * 0.3).toFixed(2)})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x1 + px * 5, y1 + py * 5);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x1 - px * 5, y1 - py * 5);
+      ctx.stroke();
+    }
+
+    /* ---- the star spiralling toward the hole ---- */
+    const para = (t * 0.055) % 1;
+    const ang0 = t * 2.6 + para * TAU * 1.5;
+    const rr = R * (0.14 + (1 - easeInCubic(para)) * 0.92);
+    const sx = cx + Math.cos(ang0) * rr;
+    const sy = cy + Math.sin(ang0) * rr * 0.6 + wob(301, 2);
+    this.starTrail.push({ x: sx, y: sy });
+    if (this.starTrail.length > 22) this.starTrail.shift();
+
+    // the smear she leaves behind
+    for (let i = 0; i < this.starTrail.length; i++) {
+      const tr = this.starTrail[i];
+      const a = (i + 1) / this.starTrail.length;
+      ctx.strokeStyle = `rgba(0,0,0,${(0.26 * a).toFixed(2)})`;
+      ctx.lineWidth = 1.6;
+      roughCircle(ctx, tr.x, tr.y, 2.6 * a + wob(503 + i * 7, 0.6), 503 + i * 7, 0.5, 6);
+    }
+
+    // her body, slowly spinning — a fixed 2x of the hero star's
+    // standard size, so she reads as the exact same little star
+    // from the game being dragged in
+    const sc = 2 * (0.98 + wob(307, 0.02));
     ctx.save();
-    ctx.translate(L.cx, L.cy + by);
-    ctx.rotate(t * 0.5);
-    ctx.scale(s, s);
+    ctx.translate(sx, sy);
+    ctx.rotate(t * 0.5 * (1 - para * 0.4));
+    ctx.scale(sc, sc);
     starPath(ctx, 16, 7.2, 41, 1.7);
     ctx.fillStyle = '#fff';
     ctx.fill();
@@ -238,136 +381,84 @@ class Menu {
     ctx.strokeStyle = 'rgba(0,0,0,0.5)';
     ctx.lineWidth = 1.6;
     ctx.stroke();
+    this.drawStarFace(ctx, para, this.blink);
     ctx.restore();
-
-    /* --- her happy face: eyes watch the pulsar --- */
-    const dX = pp.x - L.cx, dY = pp.y - (L.cy + by);
-    const d = Math.hypot(dX, dY) || 1;
-    const lx = dX / d, ly = dY / d;
-    const near = d < R * 0.72;            // the pulsar is close enough to pet
-
-    ctx.save();
-    ctx.translate(L.cx, L.cy + by);
-
-    const er = 5.1 * s;
-    for (const dir of [-1, 1]) {
-      const ex = dir * 5.7 * s + wob(41 + dir * 9, 0.5 * s);
-      const ey = -3.4 * s + wob(41 + dir * 4, 0.5 * s);
-      if (near && this.blink <= 0) {
-        // joyful squint — a thick arch
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 3.2 * s;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(ex - er * 1.1, ey + er * 0.3);
-        ctx.quadraticCurveTo(ex, ey - er * 0.85 + wob(41 + dir * 13, 0.6 * s), ex + er * 1.1, ey + er * 0.3);
-        ctx.stroke();
-      } else {
-        roughEllipsePath(ctx, ex, ey, er, er * 1.16, 41 + dir * 17, 0.08, 12);
-        ctx.fillStyle = '#fff';
-        ctx.fill();
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 2.2 * s;
-        ctx.stroke();
-
-        if (this.blink > 0) {
-          ctx.beginPath();
-          ctx.moveTo(ex - er * 1.1, ey + 0.5);
-          ctx.lineTo(ex + er * 1.1, ey + 0.5);
-          ctx.lineWidth = 2.6 * s;
-          ctx.stroke();
-        } else {
-          const px = clamp(lx * er * 0.5, -er * 0.5, er * 0.5);
-          const py = clamp(ly * er * 0.5, -er * 0.55, er * 0.5);
-          ctx.beginPath();
-          ctx.arc(ex + px, ey + py, 2.8 * s, 0, TAU);
-          ctx.fillStyle = '#000';
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(ex + px - 1.1 * s, ey + py - 1.3 * s, 1.05 * s, 0, TAU);
-          ctx.fillStyle = '#fff';
-          ctx.fill();
-        }
-      }
-    }
-
-    // smile — she grins wider whenever the pulsar hops close
-    const smileY = near ? 8.8 * s : 7.3 * s;
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2 * s;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(-4.6 * s, 3 * s);
-    ctx.quadraticCurveTo(0, smileY + wob(72, 1.2 * s), 4.6 * s, 3 * s);
-    ctx.stroke();
-
-    // faint cheek strokes
-    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-    ctx.lineWidth = 1.8 * s;
-    for (const dir of [-1, 1]) {
-      roughEllipsePath(ctx, dir * 6.8 * s, 2.4 * s, 1.6 * s, 1.1 * s, 41 + dir * 44, 0.2, 8);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    /* --- the small pulsar she plays with --- */
-    this.drawMiniPulsar(ctx, pp.x, pp.y, R * 0.13);
   }
 
-  /** tiny gleeful pulsar — the star's plaything */
-  drawMiniPulsar(ctx, x, y, pr) {
-    const pseed = 61;
-    ctx.save();
-    ctx.translate(x, y);
+  /** the star's face as she gets swallowed — hero units (caller scales) */
+  drawStarFace(ctx, para, blink) {
+    let expr = 'happy';
+    if (para > 0.4) expr = 'worried';
+    if (para > 0.74) expr = 'scared';
 
-    // fluttering corona nubs
-    ctx.rotate(this.t * 2.3);
-    ctx.strokeStyle = 'rgba(0,0,0,0.42)';
-    ctx.lineWidth = 2.2;
-    ctx.lineCap = 'round';
-    for (let i = 0; i < 4; i++) {
-      const a = i * TAU / 4;
-      const r1 = pr + 2, r2 = pr + 5 + Math.sin(this.t * 11 + i * 2) * 2;
-      roughLine(ctx, Math.cos(a) * r1, Math.sin(a) * r1, Math.cos(a) * r2, Math.sin(a) * r2, pseed + i * 13, 2);
-    }
-    ctx.rotate(-this.t * 2.3);
-
-    // black core
-    roughCirclePath(ctx, 0, 0, pr, pseed + 5, 0.12, 12);
-    ctx.fillStyle = '#000';
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2.4;
-    ctx.stroke();
-
-    // white void eyes, the way the released pulsar gleams
-    const er = pr * 0.3;
-    for (const sdir of [-1, 1]) {
-      roughEllipsePath(ctx, sdir * pr * 0.33, -pr * 0.08 + wob(pseed + sdir * 4, pr * 0.04),
-        er * 0.8, er, pseed + sdir * 17, 0.12, 8);
+    const er = 5.1;
+    for (const s of [-1, 1]) {
+      const ex = s * 5.7 + wob(41 + s * 9, 0.5);
+      const ey = -3.4 + wob(41 + s * 4, 0.5);
+      if (blink > 0) {
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.moveTo(ex - er * 1.1, ey + 0.5);
+        ctx.lineTo(ex + er * 1.1, ey + 0.5);
+        ctx.stroke();
+        continue;
+      }
+      roughEllipsePath(ctx, ex, ey, er, er * 1.16, 41 + s * 17, 0.08, 12);
       ctx.fillStyle = '#fff';
       ctx.fill();
-    }
-
-    // tiny white grin
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1.7;
-    ctx.beginPath();
-    ctx.moveTo(-pr * 0.3, pr * 0.28);
-    ctx.quadraticCurveTo(0, pr * 0.54 + wob(pseed + 31, pr * 0.05), pr * 0.3, pr * 0.28);
-    ctx.stroke();
-
-    // occasional sparkles
-    if (chance(0.04)) {
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.lineWidth = 1.8;
-      for (let i = 0; i < 4; i++) {
-        const a = rnd(TAU);
-        const rr = pr * rnd(0.5, 1.4);
-        roughLine(ctx, Math.cos(a) * rr, Math.sin(a) * rr,
-          Math.cos(a) * (rr + rnd(4, 9)), Math.sin(a) * (rr + rnd(4, 9)), rnd(1000) | 0, 2);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      if (expr === 'scared') {
+        ctx.beginPath();
+        ctx.arc(ex, ey, 2.2, 0, TAU);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+      } else if (expr === 'worried') {
+        ctx.beginPath();
+        ctx.arc(ex, ey + 0.4, 2.5, 0, TAU);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(ex, ey, 2.8, 0, TAU);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(ex - 1.1, ey - 1.3, 1.05, 0, TAU);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
       }
     }
-    ctx.restore();
+
+    // worried brows the moment she feels the pull
+    if (expr !== 'happy') {
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      for (const s of [-1, 1]) {
+        roughLine(ctx, s * 5.7 + s * 2.2 - 1, -8.4, s * 5.7 - s * 2.4, -6, 41 + s * 5 + 200, 1.2);
+      }
+    }
+
+    // mouth: smile -> wobbly little O -> open wail
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    if (expr === 'happy') {
+      ctx.beginPath();
+      ctx.moveTo(-4.4, 6.2);
+      ctx.quadraticCurveTo(-2, 8.8 + wob(41 + 31, 1.2), 0, 6.6);
+      ctx.quadraticCurveTo(2, 8.8 + wob(41 + 37, 1.2), 4.4, 6.1);
+      ctx.stroke();
+    } else if (expr === 'worried') {
+      roughEllipsePath(ctx, 0, 7, 1.9, 1.5, 41 + 73, 0.2, 8);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+    } else {
+      roughEllipsePath(ctx, 0, 7.4, 3.2, 4.2, 41 + 87, 0.14, 10);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+    }
   }
 }

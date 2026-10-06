@@ -91,12 +91,18 @@ class Game {
 
   /* ---------------- flow ---------------- */
 
-  start() {
+  /** start (or SKIP-start) a run. `seconds` = start the game at the
+      N-th second of the nightmare: spawner, difficulty and attack
+      unlocks are primed to that moment, and at >= 90 the release
+      ritual is available instantly. */
+  start(seconds = 0) {
+    const skip = clamp(Math.floor(seconds) | 0, 0, RELEASE_AT);
     this.player.reset(this.w, this.h);
     this.player.mode = 'star';
     this.bullets.clear();
     this.spawner.reset();
-    this.time = 0;
+    this.spawner.elapsed = skip;       // unlock every attack up to `skip`
+    this.time = skip;
     this.score = 0;
     this.deathT = 0;
     this.parryT = 0;
@@ -110,6 +116,11 @@ class Game {
     this.paused = false;
     this.label.text = '';
     this.label.t = 0;
+    if (skip > 0) {
+      // dropped mid-nightmare: one full breath before the ink arrives
+      this.player.invuln = 1.4;
+      this.spawner.cooldown = 2.0;
+    }
     this.state = 'playing';
     document.body.classList.add('hide-cursor');
   }
@@ -381,7 +392,7 @@ class Game {
 
       if (this.input.tapped('KeyR')) {
         if (this.releaseReady) this.startRelease();
-        else this.start();
+        else this.start(this.menu.startSec);
       }
       if (this.label.t > 0) this.label.t -= dt;
       return;
@@ -393,7 +404,7 @@ class Game {
       if (this.deathT > 0.6) {
         const p = this.input.pointer;
         if (this.input.tapped('KeyR') || this.input.tapped('Enter') || this.input.tapped('Space') || p.justDown) {
-          this.start();
+          this.start(this.menu.startSec);
         }
       }
       if (this.label.t > 0) this.label.t -= dt;

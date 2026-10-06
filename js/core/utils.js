@@ -197,6 +197,49 @@ function hatchRect(ctx, x, y, w, h, gap, seed, opts = {}) {
   ctx.restore();
 }
 
+/* ---------------- tiled hatch pattern (perf) ---------------- */
+
+const _hatchCache = new Map();
+
+/**
+ * Cheap tiled diagonal-hatch CanvasPattern. Paints a wall of hatch
+ * with ONE fillRect instead of hundreds of marker strokes — this is
+ * what made the ClosingPress walls eat whole frames. Optionally
+ * mirrored (the two press walls hatch in opposite directions).
+ */
+function hatchPattern(color = 'rgba(0,0,0,0.65)', width = 2.4, spacing = 9, mirror = false) {
+  const key = `${color}|${width}|${spacing}|${mirror ? 1 : 0}`;
+  let p = _hatchCache.get(key);
+  if (p) return p;
+
+  const T = spacing * Math.SQRT2;                 // tile side -> lines repeat at `spacing`
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const tile = document.createElement('canvas');
+  tile.width = Math.max(2, Math.ceil(T * dpr));
+  tile.height = Math.max(2, Math.ceil(T * dpr));
+  const c = tile.getContext('2d');
+  c.scale(dpr, dpr);
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.strokeStyle = color;
+  c.lineWidth = width;
+  c.beginPath();
+  const j = Math.max(1.2, width * 0.9);
+  if (!mirror) {
+    c.moveTo(-j, -j);
+    c.quadraticCurveTo(T * 0.3, T * 0.3 + j, T * 0.5, T * 0.5);
+    c.quadraticCurveTo(T * 0.7, T * 0.7 - j, T + j, T + j);
+  } else {
+    c.moveTo(T + j, -j);
+    c.quadraticCurveTo(T * 0.7, T * 0.3 + j, T * 0.5, T * 0.5);
+    c.quadraticCurveTo(T * 0.3, T * 0.7 - j, -j, T + j);
+  }
+  c.stroke();
+  p = c.createPattern(tile, 'repeat');
+  _hatchCache.set(key, p);
+  return p;
+}
+
 /** dashed line that follows a polyline — used for laser warnings */
 function dashedPolyline(ctx, pts, dashLen, gapLen, seed, amp, offset = 0) {
   const period = dashLen + gapLen;
