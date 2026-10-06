@@ -1,0 +1,705 @@
+'use strict';
+
+/* ============================================================
+   Game — state machine (menu / playing / paused / dead),
+   fixed-order update & render pipeline, HUD, scoring.
+   Modules: Input, CanvasRenderer, Player, BulletPool,
+            DoodleEnemyFactory, SpawnManager, Menu.
+   ============================================================ */
+
+/* parry mechanic (SPACE): 0.2s of protection, 10s cooldown */
+const PARRY_ACTIVE = 0.2;
+const PARRY_COOLDOWN = 10;
+const PARRY_RADIUS = 38;
+
+/* release cutscene (survive 90s -> R): star flies home, inflates,
+   agonizes, partially collapses spitting pulsar rays, then fully
+   collapses — inverting the whole sheet.
+
+   Timeline (10s total):
+     0-1s   fly to the centre
+     1-4s   inflate to x2 — the face twists in pain
+     4-7s   PARTIAL collapse: wide white eyes, rays burst out, "i feel power"
+     7-10s  FULL collapse into the core -> pulsar + inverted cosmos */
+const RELEASE_AT = 90;          // seconds of survival needed
+const CS_FLY = 1.0;             // 0-1s
+const CS_INFLATE = 3.0;         // 1-4s  (inflate x2 + pained face)
+const CS_COLLAPSE = 3.0;        // 4-7s  (partial collapse + white-eye rays)
+const CS_FINAL = 3.0;           // 7-10s (full collapse)
+
+class Game {
+  constructor(canvas) {
+    this.renderer = new CanvasRenderer(canvas);
+    this.input = new Input(canvas, this.renderer);
+    this.w = this.renderer.w;
+    this.h = this.renderer.h;
+
+    this.bullets = new BulletPool();
+    this.player = new Player(this);
+
+    this.factory = new DoodleEnemyFactory(this);
+    registerAllAttacks(this.factory);
+    this.spawner = new SpawnManager(this, this.factory);
+
+    this.menu = new Menu(this);
+
+    this.state = 'menu';       // menu | playing | dead
+    this.paused = false;
+    this.time = 0;
+    this.score = 0;
+    this.deathT = 0;
+    this.hi = parseInt(localStorage.getItem('doodlehell.hi') || '0', 10) || 0;
+    this.menu.hi = this.hi;
+
+    // noclip (invulnerable star) — selectable in the menu, persists
+    this.noclip = localStorage.getItem('doodlehell.noclip') === '1';
+
+    this.label = { text: '', t: 0 };
+
+    // parry (SPACE)
+    this.parryT = 0;   // protection remaining
+    this.parryCd = 0;  // cooldown remaining
+
+    // release (R after RELEASE_AT seconds): star -> pulsar -> inverted cosmos
+    this.released = false;
+    this.releaseNotified = false;
+    this.cs = null;        // cutscene state while state === 'cutscene'
+    this.csFace = null;    // cutscene face: null | 'pain' | 'wide'
+    this.cosmic = null;    // CosmicBackground spawned once released
+
+    this._last = 0;
+    this.loop = this.loop.bind(this);
+  }
+
+  /** difficulty ramp is 1.4x steeper than before */
+  get difficulty() { return 1 + (this.time / 40) * 1.4; }
+
+  /** R turns from "retry" into "release" after surviving long enough */
+  get releaseReady() {
+    return this.state === 'playing' && !this.released && !this.cs && this.time >= RELEASE_AT;
+  }
+
+  resize() {
+    this.renderer.resize();
+    this.w = this.renderer.w;
+    this.h = this.renderer.h;
+    if (this.state === 'playing') {
+      this.player.x = clamp(this.player.x, 14, this.w - 14);
+      this.player.y = clamp(this.player.y, 14, this.h - 14);
+    }
+  }
+
+  /* ---------------- flow ---------------- */
+
+  start() {
+    this.player.reset(this.w, this.h);
+    this.player.mode = 'star';
+    this.bullets.clear();
+    this.spawner.reset();
+    this.time = 0;
+    this.score = 0;
+    this.deathT = 0;
+    this.parryT = 0;
+    this.parryCd = 0;
+    this.released = false;
+    this.releaseNotified = false;
+    this.cs = null;
+    this.csFace = null;
+    this.cosmic = null;
+    this.renderer.inverted = false;
+    this.paused = false;
+    this.label.text = '';
+    this.label.t = 0;
+    this.state = 'playing';
+    document.body.classList.add('hide-cursor');
+  }
+
+  toMenu() {
+    this.state = 'menu';
+    this.paused = false;
+    this.bullets.clear();
+    this.spawner.reset();
+    this.menu.hi = this.hi;
+    document.body.classList.remove('hide-cursor');
+  }
+
+  notify(text) {
+    this.label.text = text;
+    this.label.t = 1.8;
+  }
+
+  toggleNoclip() {
+    this.noclip = !this.noclip;
+    try { localStorage.setItem('doodlehell.noclip', this.noclip ? '1' : '0'); } catch (_) {}
+    this.notify(this.noclip ? 'NOCLIP: ON' : 'NOCLIP: OFF');
+  }
+
+  /** SPACE — 0.2s of protection, 10s cooldown */
+  tryParry() {
+    if (this.parryCd > 0 || !this.player.alive || this.state !== 'playing') return false;
+    this.parryT = PARRY_ACTIVE;
+    this.parryCd = PARRY_COOLDOWN;
+    const p = this.player;
+    this.renderer.addShake(4);
+    this.renderer.addFlash(0.1);
+    // expanding doodle rings
+    this.bullets.spawnParticle({ x: p.x, y: p.y, vx: 0, vy: 0, life: 0.3, size: 24, g: 90, ring: true, drag: 0 });
+    this.bullets.spawnParticle({ x: p.x, y: p.y, vx: 0, vy: 0, life: 0.42, size: 38, g: 150, ring: true, drag: 0 });
+    this.bullets.burst(p.x, p.y, 14, { s0: 120, s1: 340, life: 0.4, size: 3, g: rint(90, 170), drag: 4 });
+    return true;
+  }
+
+  onPlayerHit() {
+    this.renderer.addShake(13);
+    this.renderer.addFlash(0.28);
+    this.bullets.burst(this.player.x, this.player.y, 26, { s0: 90, s1: 420, life: 0.8, size: 5, g: rint(40, 150) });
+  }
+
+  onPlayerDeath() {
+    const p = this.player;
+    this.renderer.addShake(26);
+    this.renderer.addFlash(0.45);
+    this.bullets.burst(p.x, p.y, 90, { s0: 120, s1: 640, life: 1.4, size: 7, g: rint(20, 140), drag: 2 });
+    // the whole swarm of ink dissolves into smoke
+    const bl = this.bullets.bullets.used;
+    for (let i = 0; i < bl.length; i++) {
+      const b = bl[i];
+      if (!b.alive) continue;
+      if (i % 3 === 0) {
+        this.bullets.spawnParticle({
+          x: b.x, y: b.y, vx: rnd(-40, 40), vy: rnd(-40, 40),
+          life: 0.6, size: rnd(2, 5), g: rint(140, 210), drag: 3
+        });
+      }
+      b.alive = false;
+    }
+    this.deathT = 0;
+  }
+
+  gameOver() {
+    this.state = 'dead';
+    this.score = Math.floor(this.time * 100);
+    if (this.score > this.hi) {
+      this.hi = this.score;
+      try { localStorage.setItem('doodlehell.hi', String(this.hi)); } catch (_) {}
+    }
+    document.body.classList.remove('hide-cursor');
+  }
+
+  /* ---------------- release: R after 90s ---------------- */
+
+  startRelease() {
+    if (!this.releaseReady) return;
+    const p = this.player;
+    this.cs = {
+      stage: 0, t: 0,
+      ox: p.x, oy: p.y,        // star's start position
+      scale: 1
+    };
+    this.csFace = null;        // face begins serene; the pain comes soon
+    this.spawner.reset();      // the ink stands still for the ritual
+    this.bullets.clear();      // (only particles reign during the cutscene)
+    this.state = 'cutscene';
+    p.invuln = 0;
+    p.blinkT = 99;
+    this.renderer.addFlash(0.2);
+    this.renderer.addShake(6);
+  }
+
+  cutsceneUpdate(dt) {
+    const cs = this.cs;
+    if (!cs) { this.state = 'playing'; return; }
+    const p = this.player;
+    const w = this.w, h = this.h;
+    cs.t += dt;
+
+    if (this.input.tapped('KeyR')) { this.finishRelease(); return; }
+
+    if (cs.stage === 0) { // ---- (0-1s) fly to the centre ----
+      this.csFace = null;
+      const k = easeInOutCubic(clamp(cs.t / CS_FLY, 0, 1));
+      p.x = lerp(cs.ox, w / 2, k);
+      p.y = lerp(cs.oy, h / 2, k);
+      // doodle trail
+      if (CLOCK.frame % 2 === 0) {
+        this.bullets.spawnParticle({
+          x: p.x + rnd(-6, 6), y: p.y + rnd(-6, 6),
+          vx: rnd(-30, 30), vy: rnd(-30, 30),
+          life: 0.6, size: rnd(2, 5), g: rint(140, 200), drag: 3
+        });
+      }
+      if (cs.t >= CS_FLY) { cs.stage = 1; cs.t = 0; this.renderer.addShake(4); }
+    } else if (cs.stage === 1) { // ---- (1-4s) inflate to x2 — everything hurts ----
+      this.csFace = 'pain';
+      const k = easeInOutCubic(clamp(cs.t / CS_INFLATE, 0, 1));
+      cs.scale = 1 + k;                                 // 1 -> 2
+      if (CLOCK.frame % 3 === 0) {
+        this.bullets.spawnParticle({
+          x: w / 2 + rnd(-cs.scale * 10, cs.scale * 10), y: h / 2 + rnd(-cs.scale * 10, cs.scale * 10),
+          vx: rnd(-60, 60), vy: rnd(-60, 60),
+          life: 0.5, size: rnd(2, 5), g: rint(120, 190), drag: 3
+        });
+      }
+      this.renderer.addShake(2 + cs.t * 1.7);
+      if (cs.t >= CS_INFLATE) { cs.stage = 2; cs.t = 0; cs.scale = 2; this.csFace = 'wide'; }
+    } else if (cs.stage === 2) { // ---- (4-7s) PARTIAL collapse: white eyes + rays + "i feel power" ----
+      this.csFace = 'wide';
+      const k = clamp(cs.t / CS_COLLAPSE, 0, 1);
+      // contracts from 2 down to ~1.35, then pulses — collapsing, but not yet
+      cs.scale = 1.35 + (1 - k) * 0.65 + Math.sin(cs.t * 7) * 0.18;
+      // raw energy spits out as the star fights the collapse
+      if (CLOCK.frame % 4 === 0) {
+        this.bullets.spawnParticle({
+          x: w / 2 + rnd(-cs.scale * 12, cs.scale * 12), y: h / 2 + rnd(-cs.scale * 12, cs.scale * 12),
+          vx: rnd(-120, 120), vy: rnd(-120, 120),
+          life: 0.4, size: rnd(1.5, 4), g: rint(70, 160), drag: 4
+        });
+      }
+      this.renderer.addShake(5 + Math.abs(Math.sin(cs.t * 7)) * 7);
+      if (cs.t >= CS_COLLAPSE) { cs.stage = 3; cs.t = 0; cs.scale = 1.3; }
+    } else { // ---- (7-10s) FULL collapse into the core ----
+      this.csFace = 'wide';
+      const k = easeInCubic(clamp(cs.t / CS_FINAL, 0, 1));
+      cs.scale = lerp(1.3, 0.24, k);
+      // everything gets sucked into the centre
+      if (CLOCK.frame % 3 === 0) {
+        const a = Math.random() * TAU;
+        const d = 30 + (1 - k) * 70;
+        this.bullets.spawnParticle({
+          x: w / 2 + Math.cos(a) * d, y: h / 2 + Math.sin(a) * d,
+          vx: -Math.cos(a) * (140 + k * 220), vy: -Math.sin(a) * (140 + k * 220),
+          life: 0.5, size: rnd(1.5, 4), g: rint(60, 150), drag: 4
+        });
+      }
+      this.renderer.addShake(6 + k * 22);
+      if (cs.t >= CS_FINAL) {
+        this.renderer.addShake(26);
+        this.renderer.addFlash(0.8);
+        this.bullets.burst(w / 2, h / 2, 46, { s0: 60, s1: 640, life: 1, size: 6, g: rint(20, 140), drag: 2.4 });
+        this.finishRelease();
+        return;
+      }
+    }
+  }
+
+  finishRelease() {
+    const p = this.player;
+    p.x = this.w / 2;
+    p.y = this.h / 2;
+    this.cs = null;
+    this.csFace = null;
+    this.released = true;
+    this.renderer.inverted = true;                 // whole sheet flips
+    this.cosmic = new CosmicBackground(this);      // meteors, comets, tiny stars
+    p.mode = 'pulsar';
+    p.invuln = 2.5;
+    this.paused = false;
+    this.spawner.reset();
+    this.bullets.clear();
+    this.state = 'playing';
+    this.notify('RELEASED — INVERTED COSMOS');
+    this.renderer.addShake(12);
+    this.renderer.addFlash(0.35);
+  }
+
+  /* ---------------- update ---------------- */
+
+  update(dt) {
+    this.renderer.update(dt);
+
+    if (this.state === 'menu') {
+      this.menu.update(dt);
+      this.bullets.update(dt, this);
+      if (this.input.tapped('KeyN')) this.toggleNoclip();
+      if (this.label.t > 0) this.label.t -= dt;
+      return;
+    }
+
+    // global keys
+    if (this.input.tapped('Escape')) { this.toMenu(); return; }
+    if (this.input.tapped('KeyN')) this.toggleNoclip();
+
+    if (this.state === 'cutscene') {
+      this.cutsceneUpdate(dt);
+      if (this.label.t > 0) this.label.t -= dt;
+      return;
+    }
+
+    if (this.state === 'playing') {
+      if (this.input.tapped('KeyP')) this.paused = !this.paused;
+
+      if (!this.paused) {
+        this.time += dt;
+
+        // release becomes available at RELEASE_AT — shout it once
+        if (!this.released && !this.releaseNotified && this.time >= RELEASE_AT) {
+          this.releaseNotified = true;
+          this.notify('RELEASE READY — PRESS R');
+        }
+
+        // parry timers + activation
+        if (this.input.tapped('Space')) this.tryParry();
+        if (this.parryT > 0) this.parryT = Math.max(0, this.parryT - dt);
+        if (this.parryCd > 0) this.parryCd = Math.max(0, this.parryCd - dt);
+
+        this.player.update(dt, this.input);
+        this.spawner.update(dt);
+        if (this.cosmic) this.cosmic.update(dt);
+        this.bullets.update(dt, this);
+
+        const p = this.player;
+        const parrying = this.parryT > 0;
+        if (p.alive && !this.noclip) {
+          const bl = this.bullets.bullets.used;
+          for (let i = 0; i < bl.length; i++) {
+            const b = bl[i];
+            if (!b.alive) continue;
+            const d = dist(b.x, b.y, p.x, p.y);
+            if (parrying) {
+              // parry erases incoming ink inside the ring
+              if (d < PARRY_RADIUS + b.r) {
+                b.alive = false;
+                this.bullets.spawnParticle({
+                  x: b.x, y: b.y, vx: rnd(-60, 60), vy: rnd(-60, 60),
+                  life: 0.3, size: rnd(2, 4), g: rint(90, 170), drag: 5
+                });
+              }
+            } else if (d < b.r + p.r) {
+              b.alive = false;
+              p.hit();
+              if (!p.alive) break;
+            }
+          }
+          if (p.alive && !parrying && this.spawner.hitTest(p.x, p.y)) p.hit();
+        } else if (p.alive) {
+          this.deathT = 0;
+        } else {
+          this.deathT += dt;
+          if (this.deathT > 1.1) this.gameOver();
+        }
+      }
+
+      if (this.input.tapped('KeyR')) {
+        if (this.releaseReady) this.startRelease();
+        else this.start();
+      }
+      if (this.label.t > 0) this.label.t -= dt;
+      return;
+    }
+
+    if (this.state === 'dead') {
+      this.bullets.update(dt, this);
+      this.deathT += dt;
+      if (this.deathT > 0.6) {
+        const p = this.input.pointer;
+        if (this.input.tapped('KeyR') || this.input.tapped('Enter') || this.input.tapped('Space') || p.justDown) {
+          this.start();
+        }
+      }
+      if (this.label.t > 0) this.label.t -= dt;
+    }
+  }
+
+  /* ---------------- draw ---------------- */
+
+  draw() {
+    const ctx = this.renderer.ctx;
+    this.renderer.begin();
+
+    if (this.state === 'menu') {
+      this.menu.draw(ctx);
+    } else {
+      // released cosmos sits behind everything
+      if (this.cosmic) this.cosmic.draw(ctx);
+
+      if (this.state === 'cutscene') {
+        this.drawCutscene(ctx);
+        this.bullets.drawParticles(ctx);
+        this.player.draw(ctx, this.cs ? this.cs.scale : 1);
+        this.drawCutsceneHUD(ctx);
+      } else {
+        this.spawner.draw(ctx);
+        this.bullets.drawBullets(ctx);
+        this.bullets.drawParticles(ctx);
+        this.player.draw(ctx);
+        this.drawHUD(ctx);
+
+        if (this.paused) this.drawPause(ctx);
+        if (this.state === 'dead') this.drawDeath(ctx);
+      }
+    }
+
+    this.renderer.end();
+  }
+
+  /* ---------- release cutscene ---------- */
+
+  drawCutscene(ctx) {
+    const w = this.w, h = this.h;
+    const cx = w / 2, cy = h / 2;
+    ctx.lineCap = 'round';
+    const s = this.cs ? this.cs.stage : 0;
+
+    // centre beacon
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([12, 10]);
+    const pulse = 26 + Math.sin(CLOCK.time * 6) * 4;
+    roughCircle(ctx, cx, cy, pulse, 141, 0.1, 22);
+    ctx.setLineDash([]);
+
+    if (s === 0) {
+      // travel line + arrowheads from the star to the beacon
+      const p = this.player;
+      const a = angTo(p.x, p.y, cx, cy);
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 12]);
+      const d = Math.hypot(cx - p.x, cy - p.y);
+      roughLine(ctx, p.x, p.y, cx, cy, 149, 3);
+      ctx.setLineDash([]);
+      // chevrons flying toward centre
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 4; i++) {
+        const k = (i + 0.5) / 4;
+        const qx = lerp(p.x, cx, k), qy = lerp(p.y, cy, k);
+        const off = 290 + (CLOCK.tick9 * 37) % 40;
+        const tt = (((CLOCK.time * 260 - off) / 100) % 1 + 1) % 1;
+        if (tt < 0.14 || tt > 0.86) continue;
+        roughLine(ctx, qx - 12, qy - 9, qx, qy, 153 + i, 2);
+        roughLine(ctx, qx - 12, qy + 9, qx, qy, 157 + i, 2);
+      }
+    } else if (s === 1) {
+      // inflate: rippling rings
+      for (let i = 0; i < 3; i++) {
+        const rr = 34 + (CLOCK.time * 90 + i * 40) % 120;
+        ctx.strokeStyle = `rgba(0,0,0,${(0.2 + i * 0.1).toFixed(2)})`;
+        ctx.lineWidth = 3 - i * 0.6;
+        roughCircle(ctx, cx, cy, rr, 161 + i * 7, 0.12, 20);
+      }
+    } else if (s === 2) {
+      // partial collapse: energy aura spits out, rings tighten around the star
+      const sc = this.cs ? this.cs.scale : 1.5;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(CLOCK.time * 2.2);
+      ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+      ctx.lineWidth = 1.8;
+      for (let i = 0; i < 5; i++) {
+        const a = i * TAU / 5;
+        const r1 = sc * 10 + 8, r2 = sc * 10 + 18 + Math.sin(CLOCK.time * 11 + i * 2) * 5;
+        roughLine(ctx, Math.cos(a) * r1, Math.sin(a) * r1, Math.cos(a) * r2, Math.sin(a) * r2, 181 + i * 5, 2.4);
+      }
+      ctx.restore();
+      for (let i = 0; i < 3; i++) {
+        const rr = sc * 12 + (CLOCK.time * 60 + i * 33) % 90;
+        ctx.strokeStyle = `rgba(0,0,0,${(0.2 + i * 0.08).toFixed(2)})`;
+        ctx.lineWidth = 2.6 - i * 0.5;
+        roughCircle(ctx, cx, cy, rr, 171 + i * 7, 0.16, 20);
+      }
+    } else {
+      // full collapse: beams spiral faster and faster into the shrinking core
+      const kt = this.cs ? this.cs.t : 0;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(CLOCK.time * 4);
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 2.6;
+      for (let i = 0; i < 5; i++) {
+        const a = i * TAU / 5;
+        const r1 = 12, r2 = 34 + Math.abs(Math.sin(CLOCK.time * 13 + i * 2)) * Math.max(14, 120 - kt * 30);
+        roughLine(ctx, Math.cos(a) * r1, Math.sin(a) * r1, Math.cos(a) * r2, Math.sin(a) * r2, 181 + i * 5, 4);
+      }
+      ctx.restore();
+      for (let i = 0; i < 4; i++) {
+        const rr = Math.max(4, (150 - kt * 40 - i * 12) % 130);
+        ctx.strokeStyle = `rgba(0,0,0,${(0.32 - i * 0.06).toFixed(2)})`;
+        ctx.lineWidth = 2.8 - i * 0.5;
+        roughCircle(ctx, cx, cy, rr, 171 + i * 7, 0.18, 18);
+      }
+    }
+
+    // "i feel power" — the star whispers it the whole time it fights the collapse
+    if (s >= 2) {
+      const sc = this.cs ? this.cs.scale : 1.5;
+      const yT = cy - (30 + sc * 24);
+      let aT = 0.9;
+      if (s === 3) aT *= 1 - clamp(this.cs.t / CS_FINAL, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.1, aT);
+      doodleText(ctx, 'i feel power', cx + wob(511 + CLOCK.tick9 * 13, 2.4), yT + wob(527, 2), 203, 30,
+        { color: 'rgba(0,0,0,0.9)', double: true });
+      ctx.restore();
+    }
+  }
+
+  drawCutsceneHUD(ctx) {
+    const w = this.w;
+    const s = this.cs ? this.cs.stage : 0;
+    const t = this.cs ? this.cs.t : 0;
+    let title = 'RELEASE';
+    if (s === 0) title = 'THE STAR GOES HOME';
+    else if (s === 1) title = 'IT HURTS — x' + (1 + t / CS_INFLATE).toFixed(1);
+    else title = '';   // 'i feel power' is shouted by the overlay instead
+    if (title) doodleText(ctx, title, w / 2, 64, 13, 30, { color: 'rgba(0,0,0,0.85)' });
+    doodleText(ctx, 'R — skip', w - 18, this.h - 20, 97, 16, { align: 'right', color: 'rgba(0,0,0,0.45)', double: false });
+  }
+
+  drawHUD(ctx) {
+    // lives
+    doodleText(ctx, 'INK LEFT', 18, 22, 3, 16, { align: 'left', color: 'rgba(0,0,0,0.55)', double: false });
+    for (let i = 0; i < 3; i++) {
+      Player.icon(ctx, 30 + i * 30, 52, 1.1, i < this.player.lives);
+    }
+
+    // parry gauge
+    const ready = this.parryCd <= 0;
+    const bx = 18, by = 74, bw = 168, bh = 14;
+    doodleText(ctx, 'SPACE — PARRY', bx, by - 10, 59, 14, {
+      align: 'left', color: ready ? '#000' : 'rgba(0,0,0,0.45)', double: false
+    });
+    const fill = ready ? 1 : 1 - this.parryCd / PARRY_COOLDOWN;
+    if (fill > 0.02) {
+      hatchRect(ctx, bx + 2, by + 2, (bw - 4) * fill, bh - 4, 5, 61, {
+        angle: 0.8, color: ready ? '#000' : 'rgba(0,0,0,0.4)', width: 2, amp: 1.2
+      });
+    }
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2.4;
+    roughRect(ctx, bx, by, bw, bh, 67, 1.6);
+    doodleText(ctx, ready ? 'READY' : this.parryCd.toFixed(1) + 's', bx + bw + 10, by + bh / 2, 71, 15, {
+      align: 'left', color: ready ? '#000' : 'rgba(0,0,0,0.5)', double: false
+    });
+
+    // "PARRY!" shout while the shield is up
+    if (this.parryT > 0 && this.player.alive) {
+      doodleText(ctx, 'PARRY!', this.player.x, this.player.y - 44, 73 + CLOCK.tick9 * 0.11, 22);
+    }
+
+    // score / time
+    const score = Math.floor(this.time * 100);
+    doodleText(ctx, 'SCORE ' + score, this.w - 18, 22, 11, 22, { align: 'right' });
+    doodleText(ctx, 'TIME ' + this.time.toFixed(1) + 's  ·  x' + this.difficulty.toFixed(1), this.w - 18, 48, 19, 16, {
+      align: 'right', color: 'rgba(0,0,0,0.55)', double: false
+    });
+
+    // noclip tag
+    if (this.noclip) {
+      doodleText(ctx, 'NOCLIP', this.w - 62, 76, 47, 20, { align: 'center', color: 'rgba(0,0,0,0.8)' });
+      ctx.save();
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 1.8;
+      roughRect(ctx, this.w - 124, 62, 106, 28, 53, 2);
+      ctx.restore();
+    }
+
+    // released-cosmos tag
+    if (this.released) {
+      doodleText(ctx, 'RELEASED', this.w - 62, 76, 47, 19, { align: 'center', color: 'rgba(0,0,0,0.55)' });
+      ctx.save();
+      ctx.setLineDash([4, 6]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 1.6;
+      roughRect(ctx, this.w - 130, 62, 136, 28, 59, 2);
+      // tiny pulsar dot
+      Player.pulsarIcon(ctx, this.w - 154, 76, 6 + Math.sin(CLOCK.time * 5) * 1);
+      ctx.restore();
+    }
+
+    // release is ready: turn R from retry into a finale
+    if (this.releaseReady) {
+      const blink = Math.floor(CLOCK.time * 2.2) % 2 === 0;
+      if (blink) {
+        doodleText(ctx, 'R — RELEASE THE STAR', this.w / 2, 118, 31 + CLOCK.tick9 * 0.09, 26, {
+          color: 'rgba(0,0,0,0.9)', double: false
+        });
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.lineWidth = 2.4;
+        roughLine(ctx, this.w / 2 - 110, 134, this.w / 2 + 110, 134, 63, 3);
+      }
+    }
+
+    // attack announcement
+    if (this.label.t > 0 && this.state === 'playing') {
+      const age = 1.8 - this.label.t;
+      const a = clamp(Math.min(age / 0.2, this.label.t / 0.6), 0, 1);
+      const y = 84;
+      doodleText(ctx, '» ' + this.label.text + ' «', this.w / 2, y, 41 + CLOCK.tick9 * 0.07, 30, {
+        color: `rgba(0,0,0,${(a * 0.9).toFixed(2)})`
+      });
+      ctx.strokeStyle = `rgba(0,0,0,${(a * 0.7).toFixed(2)})`;
+      ctx.lineWidth = 3;
+      const half = Math.min(this.w * 0.3, 240);
+      roughLine(ctx, this.w / 2 - half, y + 22, this.w / 2 + half, y + 22, 77, 4);
+    }
+  }
+
+  drawPause(ctx) {
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.fillRect(0, 0, this.w, this.h);
+    doodleText(ctx, 'PAUSED', this.w / 2, this.h / 2 - 20, 5, 64);
+    doodleText(ctx, 'press P to continue · ESC for menu', this.w / 2, this.h / 2 + 34, 9, 20, { color: 'rgba(0,0,0,0.6)', double: false });
+  }
+
+  drawDeath(ctx) {
+    const a = clamp(this.deathT / 0.5, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a * 0.85;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, this.w, this.h);
+
+    const cx = this.w / 2;
+    const cy = this.h * 0.34;
+    const R = Math.min(70, this.w * 0.12);
+
+    // eraser skull
+    roughCirclePath(ctx, cx, cy, R, 13, 0.14, 24);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    // X eyes
+    ctx.lineWidth = 4;
+    roughLine(ctx, cx - R * 0.5 - 12, cy - 14, cx - R * 0.5 + 12, cy + 10, 21, 2);
+    roughLine(ctx, cx - R * 0.5 + 12, cy - 14, cx - R * 0.5 - 12, cy + 10, 23, 2);
+    roughLine(ctx, cx + R * 0.5 - 12, cy - 14, cx + R * 0.5 + 12, cy + 10, 25, 2);
+    roughLine(ctx, cx + R * 0.5 + 12, cy - 14, cx + R * 0.5 - 12, cy + 10, 27, 2);
+    // teeth
+    for (let i = -2; i <= 2; i++) {
+      roughLine(ctx, cx + i * 20 - 8, cy + R * 0.5, cx + i * 20 + 8, cy + R * 0.5, 31 + i, 2);
+      roughLine(ctx, cx + i * 20, cy + R * 0.5, cx + i * 20, cy + R * 0.5 + 14, 37 + i, 1.5);
+    }
+
+    doodleText(ctx, 'ERASED', cx, cy + R + 66, 7, Math.min(72, this.w / 10));
+    doodleText(ctx, 'SCORE  ' + this.score, cx, cy + R + 124, 11, 34);
+    doodleText(ctx, 'BEST  ' + this.hi, cx, cy + R + 162, 17, 24, { color: 'rgba(0,0,0,0.7)' });
+    doodleText(ctx, this.time.toFixed(1) + ' seconds of survival', cx, cy + R + 196, 23, 18, { color: 'rgba(0,0,0,0.55)', double: false });
+
+    if (this.deathT > 0.6) {
+      const blink = Math.floor(CLOCK.time * 2.5) % 2 === 0;
+      if (blink) {
+        doodleText(ctx, 'CLICK / R — RETRY', cx, this.h * 0.85, 29, 28);
+      }
+      doodleText(ctx, 'ESC — back to the menu', cx, this.h * 0.85 + 34, 33, 17, { color: 'rgba(0,0,0,0.55)', double: false });
+    }
+    ctx.restore();
+  }
+
+  /* ---------------- loop ---------------- */
+
+  loop(ts) {
+    if (!this._last) this._last = ts;
+    const dt = clamp((ts - this._last) / 1000, 0.001, 0.034);
+    this._last = ts;
+
+    clockTick(dt);
+    this.update(dt);
+    this.draw();
+    this.input.endFrame();
+
+    requestAnimationFrame(this.loop);
+  }
+}
