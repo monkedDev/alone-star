@@ -5,7 +5,7 @@
 
    EnemyFactory        — abstract base (cannot be instantiated,
                          declares the contract).
-   DoodleEnemyFactory  — concrete factory: registers all 25
+   DoodleEnemyFactory  — concrete factory: registers all 24
                          attack classes, reuses instances
                          (per-type free lists = zero allocation)
                          and performs weighted type selection.
@@ -110,7 +110,7 @@ class DoodleEnemyFactory extends EnemyFactory {
   }
 }
 
-/** register all 11 attack classes with their spawn metadata */
+/** register all 24 attack classes with their spawn metadata */
 function registerAllAttacks(factory) {
   factory.define('laser', CurvedLaserAttack, { label: 'CURVED LASERS', family: 'beam', unlock: 0, weight: 11 });
   factory.define('rain', InkRainAttack, { label: 'INK RAIN', family: 'bullet', unlock: 3, weight: 10 });
@@ -134,7 +134,6 @@ function registerAllAttacks(factory) {
   factory.define('swarm', ChaoticSwarmAttack, { label: 'CHAOTIC SWARM', family: 'swarm', unlock: 62, weight: 8 });
   factory.define('clock', ClockAttack, { label: 'CLOCKWORK', family: 'field', unlock: 56, weight: 6 });
   factory.define('meteor', MeteorAttack, { label: 'METEOR', family: 'bullet', unlock: 60, weight: 6 });
-  factory.define('ghost', GhostAttack, { label: 'GHOSTLY WAIL', family: 'entity', unlock: 64, weight: 6 });
   factory.define('tornado', TornadoAttack, { label: 'TORNADO', family: 'field', unlock: 68, weight: 6 });
   factory.define('cannon', CannonAttack, { label: 'INK CANNON', family: 'bullet', unlock: 72, weight: 6 });
 }

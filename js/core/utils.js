@@ -143,6 +143,29 @@ function roughCircle(ctx, x, y, r, seed, amp = 0.1, segs = 20) {
   ctx.stroke();
 }
 
+/** a magnetic field doodled plainly: three concentric rings around
+    (x, y), each dashed and each sliding in its OWN direction
+    (one clockwise, one counter-clockwise, one slow). `alpha`
+    fades the whole set — used by the pulsar and the ritual. */
+function fieldRings(ctx, x, y, base, alpha, seed) {
+  const defs = [
+    { off: 16, dash: [10, 8],  sp: 30, dir: 1,  a: 0.55, lw: 2.4 },
+    { off: 34, dash: [3, 9],   sp: 46, dir: -1, a: 0.4,  lw: 2 },
+    { off: 54, dash: [16, 12], sp: 22, dir: 1,  a: 0.3,  lw: 2.8 }
+  ];
+  ctx.save();
+  for (let i = 0; i < defs.length; i++) {
+    const f = defs[i];
+    ctx.setLineDash(f.dash);
+    ctx.lineDashOffset = f.dir * CLOCK.time * f.sp;
+    ctx.strokeStyle = `rgba(0,0,0,${(f.a * alpha).toFixed(3)})`;
+    ctx.lineWidth = f.lw;
+    roughCircle(ctx, x, y, base + f.off + Math.sin(CLOCK.time * 3 + i * 2) * 3,
+      seed + i * 13, 0.06, 30);
+  }
+  ctx.restore();
+}
+
 function roughEllipsePath(ctx, x, y, rx, ry, seed, amp = 0.1, segs = 18) {
   ctx.beginPath();
   for (let i = 0; i <= segs; i++) {

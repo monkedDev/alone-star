@@ -342,14 +342,22 @@ class Player {
     ctx.restore();
   }
 
-  /** the collapsed star: a breathing pulsar with a gleeful face */
+  /** the collapsed star: a breathing pulsar. Reads game.csFace
+      during rituals ('angry' — the copies strike; 'calm' — the
+      field won) and grows a colossal magnetosphere as MAGNETAR. */
   drawPulsar(ctx) {
     const seed = 41;
+    const g = this.game;
+    const face = g.csFace;   // null | 'angry' | 'calm'
     const cx = this.x, cy = this.y;
     const R = 13 + Math.sin(CLOCK.time * 6.5) * 1.6;
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+
+    // magnetar magnetosphere: three plain rings, each sliding in its
+    // own direction (see fieldRings in core/utils.js)
+    if (g.magnetar) fieldRings(ctx, cx, cy, R, 1, seed + 210);
 
     // rotating corona beams
     ctx.save();
@@ -390,26 +398,58 @@ class Player {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      const px = clamp(this.lookX * er * 0.5, -er * 0.5, er * 0.5);
-      const py = clamp(this.lookY * er * 0.5, -er * 0.55, er * 0.5);
-      ctx.beginPath();
-      ctx.arc(px, py, er * 0.55, 0, TAU);
-      ctx.fillStyle = '#000';
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(px - er * 0.2, py - er * 0.2, er * 0.18, 0, TAU);
-      ctx.fillStyle = '#fff';
-      ctx.fill();
+      if (face === 'calm') {
+        // closed, content lids — the field won
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(-er * 0.85, er * 0.05);
+        ctx.quadraticCurveTo(0, er * 0.75, er * 0.85, er * 0.05);
+        ctx.stroke();
+      } else {
+        const px = clamp(this.lookX * er * 0.5, -er * 0.5, er * 0.5);
+        const py = clamp(this.lookY * er * 0.5, -er * 0.55, er * 0.5);
+        ctx.beginPath();
+        ctx.arc(px, py, er * 0.55, 0, TAU);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(px - er * 0.2, py - er * 0.2, er * 0.18, 0, TAU);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+
+        if (face === 'angry') {
+          // irritated brows slanting down toward the nose
+          ctx.strokeStyle = '#000';
+          ctx.lineWidth = 2.6;
+          roughLine(ctx, s * er * 1.1, -er * 1.5, -s * er * 0.7, -er * 0.6, seed + s * 300, 1.4);
+        }
+      }
       ctx.restore();
     }
 
-    // smug grin
+    // mouth: smug grin | irritated grit | relaxed smile
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(-R * 0.3, R * 0.3);
-    ctx.quadraticCurveTo(0, R * 0.62 + wob(seed + 31, 1), R * 0.3, R * 0.3);
-    ctx.stroke();
+    if (face === 'angry') {
+      ctx.beginPath();
+      ctx.moveTo(-R * 0.32, R * 0.44);
+      for (let i = 1; i <= 4; i++) {
+        const xx = -R * 0.32 + R * 0.64 * (i / 4);
+        ctx.lineTo(xx, R * (i % 2 === 0 ? 0.44 : 0.24) + wob(seed + i * 9, 0.5));
+      }
+      ctx.stroke();
+    } else if (face === 'calm') {
+      ctx.beginPath();
+      ctx.moveTo(-R * 0.26, R * 0.3);
+      ctx.quadraticCurveTo(0, R * 0.54 + wob(seed + 31, 0.6), R * 0.26, R * 0.3);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(-R * 0.3, R * 0.3);
+      ctx.quadraticCurveTo(0, R * 0.62 + wob(seed + 31, 1), R * 0.3, R * 0.3);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }

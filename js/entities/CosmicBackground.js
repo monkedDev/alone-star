@@ -206,3 +206,117 @@ class CosmicBackground {
     for (const c of this.comets) this.drawComet(ctx, c);
   }
 }
+
+/* ============================================================
+   J1407Background — phase 3 (BROKEN MEMORIES). The sheet drifts
+   past super-Saturn J1407b: a huge gas giant whose colossal ring
+   system slowly spins (dashes crawl, debris dots orbit). Keeps
+   the space dressing of CosmicBackground — stars behind the
+   planet, meteors and comets in front of it.
+   ============================================================ */
+
+class J1407Background extends CosmicBackground {
+  constructor(game) {
+    super(game);
+    this.spin = rnd(0, TAU);                 // ring rotation phase
+    this.orb = [rnd(TAU), rnd(TAU) + 2, rnd(TAU) + 4]; // debris on the rings
+  }
+
+  update(dt) {
+    super.update(dt);
+    this.spin += dt * 0.22;
+    for (let i = 0; i < this.orb.length; i++) this.orb[i] += dt * (0.4 - i * 0.1);
+  }
+
+  /** the giant hanging low on the right — fully inside the frame */
+  geom() {
+    const w = this.game.w, h = this.game.h;
+    const R = Math.min(w, h) * 0.3;
+    return {
+      cx: w * 0.76, cy: h * 0.58, R,
+      tilt: -0.34,                 // ring plane tilt
+      rx: R * 2.35, ry: R * 0.62   // ring half-extents
+    };
+  }
+
+  /** ring bands: half arcs, either behind (front=false) or
+      in front of the planet — so the sphere sits inside them */
+  drawRings(ctx, g, front) {
+    const fs = [0.5, 0.62, 0.74, 0.86, 0.98, 1.12];
+    const alphas = [0.55, 0.26, 0.66, 0.36, 0.48, 0.2];
+    const lws = [4, 8, 2.5, 10, 3, 6];
+    const dashes = [[16, 9], [], [7, 12], [], [20, 14], [5, 9]];
+    for (let i = 0; i < fs.length; i++) {
+      const f = fs[i];
+      ctx.strokeStyle = `rgba(0,0,0,${alphas[i]})`;
+      ctx.lineWidth = lws[i];
+      ctx.setLineDash(dashes[i]);
+      // the dashes crawl around — the rings visibly rotate
+      ctx.lineDashOffset = (front ? -1 : 1) * this.spin * (30 + i * 9);
+      ctx.beginPath();
+      ctx.ellipse(g.cx, g.cy, g.rx * f, g.ry * f, g.tilt,
+        front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+
+    // debris dots orbiting along the rings
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    for (let i = 0; i < this.orb.length; i++) {
+      const f = fs[1 + i];
+      const a = this.orb[i];
+      const ex = Math.cos(a) * g.rx * f, ey = Math.sin(a) * g.ry * f;
+      const rx = ex * Math.cos(g.tilt) - ey * Math.sin(g.tilt);
+      const ry = ex * Math.sin(g.tilt) + ey * Math.cos(g.tilt);
+      const frontSide = Math.sin(a) > 0;
+      if (frontSide !== front) continue;
+      ctx.beginPath();
+      ctx.arc(g.cx + rx, g.cy + ry, 3 + i, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  drawBody(ctx, g) {
+    const { cx, cy, R } = g;
+    // the paper ball itself
+    roughCirclePath(ctx, cx, cy, R, 401, 0.05, 40);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.95)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    // gas bands: hand-hatched stripes clipped to the disc
+    ctx.save();
+    roughCirclePath(ctx, cx, cy, R, 401, 0.05, 40);
+    ctx.clip();
+    const bands = [[-0.64, 0.1], [-0.32, 0.16], [0.04, 0.13], [0.38, 0.2], [0.7, 0.1]];
+    for (let i = 0; i < bands.length; i++) {
+      hatchRect(ctx, cx - R, cy + bands[i][0] * R, R * 2, bands[i][1] * R, 7, 411 + i * 13, {
+        angle: 0.35 + i * 0.12, color: 'rgba(0,0,0,0.5)', width: 2, amp: 1.6
+      });
+    }
+    // the great storm swirling in the atmosphere
+    roughCirclePath(ctx, cx - R * 0.35, cy + R * 0.22, R * 0.13, 431, 0.2, 12);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    roughCirclePath(ctx, cx - R * 0.35, cy + R * 0.22, R * 0.06, 437, 0.25, 8);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  draw(ctx) {
+    ctx.lineJoin = 'round';
+    // far stars hide behind the planet
+    for (const st of this.stars) this.drawStar(ctx, st);
+    const g = this.geom();
+    this.drawRings(ctx, g, false);
+    this.drawBody(ctx, g);
+    this.drawRings(ctx, g, true);
+    // near passers-by fly in front of it
+    for (const m of this.meteors) this.drawMeteor(ctx, m);
+    for (const c of this.comets) this.drawComet(ctx, c);
+  }
+}

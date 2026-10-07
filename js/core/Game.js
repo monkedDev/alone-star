@@ -27,6 +27,28 @@ const CS_INFLATE = 3.0;         // 1-4s  (inflate x2 + pained face)
 const CS_COLLAPSE = 3.0;        // 4-7s  (partial collapse + white-eye rays)
 const CS_FINAL = 3.0;           // 7-10s (full collapse)
 
+/* BROKEN MEMORIES — the second ritual (survive 150s -> R again).
+    The pulsar drifts to the centre (0-2s), its face turns irritated
+    and it coughs up four copies that hover at its corners and
+    strike it (3-6s). Then the magnetic field wakes (6-7s) and
+    EXPANDS (7-10s): the copies are shoved away and burned, the
+    face relaxes — and the pulsar becomes a MAGNETAR with colossal
+    magnetic fields. Phase 3 begins: super-Saturn J1407b spins its
+    rings behind the sheet and the ink is 1.5x weaker (lore field).
+
+    Timeline (10s total):
+      0-2s   fly to the centre
+      2-3s   irritated charge — the face turns angry
+      3-6s   four copies strike the pulsar from its corners
+      6-7s   copies hover — the field wakes
+      7-10s  field expands, copies burn -> MAGNETAR */
+const MAGNETAR_AT = 150;        // second ritual: BROKEN MEMORIES
+const CS2_FLY = 2.0;            // 0-2s
+const CS2_CHARGE = 1.0;         // 2-3s
+const CS2_COPIES = 3.0;         // 3-6s
+const CS2_HOLD = 1.0;           // 6-7s
+const CS2_FIELD = 3.0;          // 7-10s
+
 class Game {
   constructor(canvas) {
     this.renderer = new CanvasRenderer(canvas);
@@ -63,20 +85,32 @@ class Game {
     // release (R after RELEASE_AT seconds): star -> pulsar -> inverted cosmos
     this.released = false;
     this.releaseNotified = false;
+    // BROKEN MEMORIES (R after MAGNETAR_AT seconds): pulsar -> magnetar
+    this.magnetar = false;
+    this.magnetarNotified = false;
+    this.magnetarT = 0;    // seconds inside phase 3 — the x RESETS on transition
     this.cs = null;        // cutscene state while state === 'cutscene'
-    this.csFace = null;    // cutscene face: null | 'pain' | 'wide'
+    this.csFace = null;    // cutscene face: null | 'pain' | 'wide' | 'angry' | 'calm'
     this.cosmic = null;    // CosmicBackground spawned once released
 
     this._last = 0;
     this.loop = this.loop.bind(this);
   }
 
-  /** difficulty ramp is 1.4x steeper than before */
-  get difficulty() { return 1 + (this.time / 40) * 1.4; }
+  /** ramp is 1.4x steeper than before. On BROKEN MEMORIES the x
+      resets to 1.0 and grows from zero again — and the lore magnetar
+      field holds the ink back, so phase 3 stays 1.5x gentler than
+      the same second of the first phase. */
+  get difficulty() {
+    if (this.magnetar) return 1 + ((this.magnetarT / 40) * 1.4) / 1.5;
+    return 1 + (this.time / 40) * 1.4;
+  }
 
-  /** R turns from "retry" into "release" after surviving long enough */
+  /** R turns from "retry" into a ritual: "release" at 90s,
+      "BROKEN MEMORIES" at 150s (after the first ritual). */
   get releaseReady() {
-    return this.state === 'playing' && !this.released && !this.cs && this.time >= RELEASE_AT;
+    if (this.state !== 'playing' || this.cs || this.magnetar) return false;
+    return this.time >= (this.released ? MAGNETAR_AT : RELEASE_AT);
   }
 
   resize() {
@@ -94,9 +128,9 @@ class Game {
   /** start (or SKIP-start) a run. `seconds` = start the game at the
       N-th second of the nightmare: spawner, difficulty and attack
       unlocks are primed to that moment, and at >= 90 the release
-      ritual is available instantly. */
+      ritual is available instantly (at >= 150 both rituals chain). */
   start(seconds = 0) {
-    const skip = clamp(Math.floor(seconds) | 0, 0, RELEASE_AT);
+    const skip = clamp(Math.floor(seconds) | 0, 0, MAGNETAR_AT);
     this.player.reset(this.w, this.h);
     this.player.mode = 'star';
     this.bullets.clear();
@@ -109,6 +143,9 @@ class Game {
     this.parryCd = 0;
     this.released = false;
     this.releaseNotified = false;
+    this.magnetar = false;
+    this.magnetarNotified = false;
+    this.magnetarT = 0;
     this.cs = null;
     this.csFace = null;
     this.cosmic = null;
@@ -201,6 +238,7 @@ class Game {
 
   startRelease() {
     if (!this.releaseReady) return;
+    if (this.released) { this.startMagnetarRitual(); return; }
     const p = this.player;
     this.cs = {
       stage: 0, t: 0,
@@ -223,8 +261,15 @@ class Game {
     const p = this.player;
     const w = this.w, h = this.h;
     cs.t += dt;
+    if (this.cosmic) this.cosmic.update(dt);   // the space never sleeps
 
-    if (this.input.tapped('KeyR')) { this.finishRelease(); return; }
+    if (this.input.tapped('KeyR')) {
+      if (cs.ritual === 2) this.finishMagnetar();
+      else this.finishRelease();
+      return;
+    }
+
+    if (cs.ritual === 2) { this.cutsceneMagnetar(dt); return; }
 
     if (cs.stage === 0) { // ---- (0-1s) fly to the centre ----
       this.csFace = null;
@@ -313,6 +358,188 @@ class Game {
     this.renderer.addFlash(0.35);
   }
 
+  /* ---------------- BROKEN MEMORIES: R after 150s ---------------- */
+
+  /** second ritual: the pulsar meets its four copies and becomes
+      a magnetar. Pure theatre — spawner and bullets stand down. */
+  startMagnetarRitual() {
+    if (!this.releaseReady) return;
+    const p = this.player;
+    this.cs = {
+      ritual: 2, stage: 0, t: 0,
+      ox: p.x, oy: p.y,        // where the pulsar drifts from
+      scale: 1,
+      copyPh: [-1, -1, -1, -1] // previous strike phase per copy (impact edges)
+    };
+    this.csFace = null;
+    this.spawner.reset();
+    this.bullets.clear();
+    this.state = 'cutscene';
+    p.invuln = 0;
+    p.blinkT = 99;
+    this.renderer.addFlash(0.2);
+    this.renderer.addShake(6);
+  }
+
+  /** geometry of the four copies: they hover at the pulsar's
+      diagonal corners (D0), lunge inward on a staggered 1.2s
+      strike cycle, and get shoved out + burned in stage 4. */
+  magnetarCopyPos(cs, i, cx, cy) {
+    const a = -Math.PI / 4 + i * (Math.PI / 2);
+    const D0 = 96;
+    let dist = D0, s = 1, alpha = 1, ph = -1;
+
+    if (cs.stage === 2) {
+      ph = ((cs.t + i * 0.3) % 1.2) / 1.2;
+      let q;
+      if (ph < 0.35) q = easeInCubic(ph / 0.35);        // lunge inward
+      else if (ph < 0.5) q = 1;                          // impact held
+      else q = 1 - easeInOutCubic((ph - 0.5) / 0.5);     // recoil back
+      dist = lerp(D0, D0 * 0.42, q);
+    } else if (cs.stage === 3) {
+      dist = D0 - 6 + wob(i * 37 + CLOCK.tick9 * 11, 3); // tensed, jittering
+    } else if (cs.stage === 4) {
+      const k = clamp(cs.t / CS2_FIELD, 0, 1);
+      const kk = clamp((k - 0.05) / 0.55, 0, 1);          // burned away by k=0.6
+      dist = D0 + easeInCubic(kk) * 540;                  // shoved away
+      s = 1 - kk;
+      alpha = 1 - kk;
+    }
+
+    const bob = Math.sin(CLOCK.time * 3 + i * 1.7) * 7;
+    const px = cx + Math.cos(a) * dist + Math.cos(a + Math.PI / 2) * bob * 0.5;
+    const py = cy + Math.sin(a) * dist + Math.sin(a + Math.PI / 2) * bob * 0.5;
+    return { x: px, y: py, s, a: alpha, ang: a, ph };
+  }
+
+  cutsceneMagnetar(dt) {
+    const cs = this.cs;
+    const p = this.player;
+    const w = this.w, h = this.h;
+
+    if (cs.stage === 0) { // ---- (0-2s) the pulsar drifts to the centre ----
+      this.csFace = null;
+      const k = easeInOutCubic(clamp(cs.t / CS2_FLY, 0, 1));
+      p.x = lerp(cs.ox, w / 2, k);
+      p.y = lerp(cs.oy, h / 2, k);
+      if (CLOCK.frame % 2 === 0) {
+        this.bullets.spawnParticle({
+          x: p.x + rnd(-6, 6), y: p.y + rnd(-6, 6),
+          vx: rnd(-30, 30), vy: rnd(-30, 30),
+          life: 0.6, size: rnd(2, 5), g: rint(140, 200), drag: 3
+        });
+      }
+      if (cs.t >= CS2_FLY) { cs.stage = 1; cs.t = 0; this.renderer.addShake(4); }
+      return;
+    }
+
+    if (cs.stage === 1) { // ---- (2-3s) irritated charge: the face turns angry ----
+      this.csFace = 'angry';
+      // the charge is sucked INTO the pulsar
+      if (CLOCK.frame % 3 === 0) {
+        const a = Math.random() * TAU;
+        const d = rnd(52, 92);
+        this.bullets.spawnParticle({
+          x: w / 2 + Math.cos(a) * d, y: h / 2 + Math.sin(a) * d,
+          vx: -Math.cos(a) * 160, vy: -Math.sin(a) * 160,
+          life: 0.35, size: rnd(1.5, 3.6), g: 0, drag: 0
+        });
+      }
+      this.renderer.addShake(2 + cs.t * 2);
+      if (cs.t >= CS2_CHARGE) {
+        cs.stage = 2; cs.t = 0;
+        this.renderer.addShake(8);
+        this.renderer.addFlash(0.18);
+        this.bullets.burst(w / 2, h / 2, 20, { s0: 40, s1: 320, life: 0.5, size: 4, g: rint(60, 150), drag: 4 });
+      }
+      return;
+    }
+
+    if (cs.stage === 2) { // ---- (3-6s) four copies strike the pulsar ----
+      this.csFace = 'angry';
+      this.renderer.addShake(3);
+      for (let i = 0; i < 4; i++) {
+        const st = this.magnetarCopyPos(cs, i, w / 2, h / 2);
+        const prev = cs.copyPh[i];
+        cs.copyPh[i] = st.ph;
+        if (st.ph >= 0.35 && prev >= 0 && prev < 0.35) {
+          // IMPACT — ink chips fly off the pulsar
+          this.bullets.burst(st.x, st.y, 8, { s0: 80, s1: 300, life: 0.5, size: 4, g: rint(80, 170), drag: 3 });
+          this.renderer.addShake(4);
+          this.renderer.addFlash(0.08);
+        }
+      }
+      if (cs.t >= CS2_COPIES) { cs.stage = 3; cs.t = 0; cs.copyPh = [-1, -1, -1, -1]; }
+      return;
+    }
+
+    if (cs.stage === 3) { // ---- (6-7s) copies hover, the field wakes ----
+      this.csFace = 'angry';
+      this.renderer.addShake(2);
+      if (CLOCK.frame % 4 === 0) {
+        const a = Math.random() * TAU, d = rnd(26, 46);
+        this.bullets.spawnParticle({
+          x: w / 2 + Math.cos(a) * d, y: h / 2 + Math.sin(a) * d,
+          vx: 0, vy: 0, life: 0.25, size: rnd(2, 4), g: 0, drag: 0
+        });
+      }
+      if (cs.t >= CS2_HOLD) {
+        cs.stage = 4; cs.t = 0;
+        this.renderer.addFlash(0.15);
+        this.renderer.addShake(6);
+        this.cosmic = new J1407Background(this); // the sheet drifts by super-Saturn
+      }
+      return;
+    }
+
+    /* ---- (7-10s) the field EXPANDS: copies pushed away & burned ---- */
+    const k = clamp(cs.t / CS2_FIELD, 0, 1);
+    const kk = clamp((k - 0.05) / 0.55, 0, 1);
+    this.csFace = k >= 0.35 ? 'calm' : 'angry';   // it worked — the face relaxes
+
+    if (kk > 0 && kk < 1 && CLOCK.frame % 2 === 0) {
+      for (let i = 0; i < 4; i++) {
+        const st = this.magnetarCopyPos(cs, i, w / 2, h / 2);
+        if (st.a <= 0.05) continue;
+        // ash torn off the burning copies, thrown outward
+        this.bullets.spawnParticle({
+          x: st.x + rnd(-8, 8), y: st.y + rnd(-8, 8),
+          vx: Math.cos(st.ang) * rnd(50, 170) + rnd(-30, 30),
+          vy: Math.sin(st.ang) * rnd(50, 170) + rnd(-30, 30),
+          life: 0.7, size: rnd(1.5, 4), g: rint(60, 140), drag: 3
+        });
+      }
+    }
+    this.renderer.addShake(5 + k * 12);
+    if (cs.t >= CS2_FIELD) {
+      this.renderer.addShake(24);
+      this.renderer.addFlash(0.8);
+      this.bullets.burst(w / 2, h / 2, 50, { s0: 60, s1: 660, life: 1, size: 6, g: rint(20, 140), drag: 2.4 });
+      this.finishMagnetar();
+    }
+  }
+
+  finishMagnetar() {
+    const p = this.player;
+    p.x = this.w / 2;
+    p.y = this.h / 2;
+    this.cs = null;
+    this.csFace = null;
+    this.magnetar = true;
+    this.magnetarT = 0;                          // the difficulty x restarts from 1.0
+    this.renderer.inverted = true;
+    this.cosmic = new J1407Background(this);   // J1407b spins its colossal rings
+    p.mode = 'pulsar';
+    p.invuln = 2.5;
+    this.paused = false;
+    this.spawner.reset();                      // phase 3 restarts gentle (very easy)
+    this.bullets.clear();
+    this.state = 'playing';
+    this.notify('BROKEN MEMORIES — MAGNETAR');
+    this.renderer.addShake(14);
+    this.renderer.addFlash(0.55);
+  }
+
   /* ---------------- update ---------------- */
 
   update(dt) {
@@ -332,6 +559,7 @@ class Game {
 
     if (this.state === 'cutscene') {
       this.cutsceneUpdate(dt);
+      this.bullets.update(dt, this);   // trails, ash and sparks must breathe
       if (this.label.t > 0) this.label.t -= dt;
       return;
     }
@@ -341,11 +569,17 @@ class Game {
 
       if (!this.paused) {
         this.time += dt;
+        if (this.magnetar) this.magnetarT += dt;   // x-clock of the 3rd phase
 
         // release becomes available at RELEASE_AT — shout it once
         if (!this.released && !this.releaseNotified && this.time >= RELEASE_AT) {
           this.releaseNotified = true;
           this.notify('RELEASE READY — PRESS R');
+        }
+        // BROKEN MEMORIES becomes available at MAGNETAR_AT — shout it once
+        if (this.released && !this.magnetar && !this.magnetarNotified && this.time >= MAGNETAR_AT) {
+          this.magnetarNotified = true;
+          this.notify('BROKEN MEMORIES — PRESS R');
         }
 
         // parry timers + activation
@@ -446,6 +680,7 @@ class Game {
   /* ---------- release cutscene ---------- */
 
   drawCutscene(ctx) {
+    if (this.cs && this.cs.ritual === 2) { this.drawMagnetarCutscene(ctx); return; }
     const w = this.w, h = this.h;
     const cx = w / 2, cy = h / 2;
     ctx.lineCap = 'round';
@@ -545,10 +780,194 @@ class Game {
     }
   }
 
+  /** BROKEN MEMORIES: the pulsar, its four copies and the
+      expanding magnetic field — all marker ink on the sheet. */
+  drawMagnetarCutscene(ctx) {
+    const cs = this.cs;
+    const w = this.w, h = this.h;
+    const cx = w / 2, cy = h / 2;
+    const s = cs.stage;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // centre beacon
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([12, 10]);
+    const pulse = 26 + Math.sin(CLOCK.time * 6) * 4;
+    roughCircle(ctx, cx, cy, pulse, 151, 0.1, 22);
+    ctx.setLineDash([]);
+
+    if (s === 0) {
+      // travel line + chevrons toward the centre (same ritual language)
+      const p = this.player;
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 12]);
+      roughLine(ctx, p.x, p.y, cx, cy, 149, 3);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 4; i++) {
+        const k = (i + 0.5) / 4;
+        const qx = lerp(p.x, cx, k), qy = lerp(p.y, cy, k);
+        const tt = (((CLOCK.time * 260 - i * 90) / 100) % 1 + 1) % 1;
+        if (tt < 0.14 || tt > 0.86) continue;
+        roughLine(ctx, qx - 12, qy - 9, qx, qy, 241 + i, 2);
+        roughLine(ctx, qx - 12, qy + 9, qx, qy, 245 + i, 2);
+      }
+    }
+
+    if (s === 1) {
+      // irritated charge: dashed rings tighten + ticks poke inward
+      for (let i = 0; i < 3; i++) {
+        const rr = 46 + ((CLOCK.time * 70 + i * 33) % 90);
+        ctx.strokeStyle = `rgba(0,0,0,${(0.22 + i * 0.07).toFixed(2)})`;
+        ctx.lineWidth = 2.6 - i * 0.5;
+        ctx.setLineDash([7, 9]);
+        roughCircle(ctx, cx, cy, rr, 251 + i * 7, 0.13, 20);
+        ctx.setLineDash([]);
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 2.6;
+      for (let i = 0; i < 6; i++) {
+        const a = i * TAU / 6 + CLOCK.time * 0.7;
+        roughLine(ctx, cx + Math.cos(a) * 94, cy + Math.sin(a) * 94,
+          cx + Math.cos(a) * 76, cy + Math.sin(a) * 76, 261 + i * 3, 2);
+      }
+    }
+
+    // ---- the four copies: born at 3s, strike, hover, then burn ----
+    if (s >= 2) {
+      for (let i = 0; i < 4; i++) {
+        const st = this.magnetarCopyPos(cs, i, cx, cy);
+        let sc = st.s;
+        if (s === 2 && cs.t < 0.25) sc *= cs.t / 0.25;   // pop-in birth
+        if (sc <= 0.03 || st.a <= 0.03) continue;
+
+        // birth ring
+        if (s === 2 && cs.t < 0.4) {
+          ctx.strokeStyle = `rgba(0,0,0,${((1 - cs.t / 0.4) * 0.6).toFixed(2)})`;
+          ctx.lineWidth = 2.4;
+          roughCircle(ctx, st.x, st.y, 14 + cs.t * 120, 271 + i * 5, 0.15, 14);
+        }
+
+        // motion lines trailing behind a lunging copy
+        if (st.ph >= 0.12 && st.ph < 0.35) {
+          ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+          ctx.lineWidth = 2;
+          for (let j = 0; j < 2; j++) {
+            const off = (j - 0.5) * 9;
+            const bx = st.x + Math.cos(st.ang + Math.PI / 2) * off;
+            const by = st.y + Math.sin(st.ang + Math.PI / 2) * off;
+            roughLine(ctx, bx + Math.cos(st.ang) * 6, by + Math.sin(st.ang) * 6,
+              bx + Math.cos(st.ang) * 24, by + Math.sin(st.ang) * 24, 277 + i * 3 + j, 2);
+          }
+        }
+
+        this.drawMemoryCopy(ctx, st.x, st.y, sc, st.a, 331 + i * 17);
+
+        // impact burst at the peak of the lunge
+        if (st.ph >= 0.35 && st.ph < 0.55) {
+          const ib = 1 - (st.ph - 0.35) / 0.2;
+          ctx.strokeStyle = `rgba(0,0,0,${(0.7 * ib).toFixed(2)})`;
+          ctx.lineWidth = 2.6;
+          for (let j = 0; j < 7; j++) {
+            const aa = st.ang + (j - 3) * 0.34;
+            roughLine(ctx, st.x + Math.cos(aa) * 7, st.y + Math.sin(aa) * 7,
+              st.x + Math.cos(aa) * (13 + 11 * ib), st.y + Math.sin(aa) * (13 + 11 * ib), 283 + j, 2);
+          }
+        }
+      }
+    }
+
+    if (s === 3) {
+      // the field wakes: dashed arcs close in, the copies tense up
+      ctx.setLineDash([10, 14]);
+      ctx.lineDashOffset = -CLOCK.time * 40;
+      for (let i = 0; i < 2; i++) {
+        ctx.strokeStyle = `rgba(0,0,0,${(0.4 - i * 0.15).toFixed(2)})`;
+        ctx.lineWidth = 2.6 - i;
+        roughCircle(ctx, cx, cy, 40 + i * 26 + Math.sin(CLOCK.time * 5 + i) * 4, 281 + i * 9, 0.14, 24);
+      }
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+    }
+
+    if (s === 4) {
+      // the magnetic field EXPANDS: three rings rush outward
+      const k = clamp(cs.t / CS2_FIELD, 0, 1);
+      const maxR = Math.hypot(w, h) * 0.62;
+      for (let i = 0; i < 3; i++) {
+        const kk = clamp(k - i * 0.14, 0, 1);
+        if (kk <= 0) continue;
+        const rr = lerp(30, maxR, 1 - Math.pow(1 - kk, 3));
+        ctx.strokeStyle = `rgba(0,0,0,${((0.55 - i * 0.16) * (1 - kk * 0.6)).toFixed(2)})`;
+        ctx.lineWidth = 4 - i;
+        ctx.setLineDash(i === 1 ? [14, 10] : []);
+        roughCircle(ctx, cx, cy, rr, 291 + i * 11, 0.1, 26);
+      }
+      ctx.setLineDash([]);
+
+      // the colossal magnetosphere: plain concentric rings, each one
+      // sliding in its own direction (grows from k=0.35)
+      const fa = clamp((k - 0.35) / 0.65, 0, 1);
+      if (fa > 0) fieldRings(ctx, cx, cy, 14, fa * 0.8, 511);
+    }
+  }
+
+  /** one of the pulsar's four copies — a small black doodle orb
+      with glaring white eyes and a scowl (flips with the sheet) */
+  drawMemoryCopy(ctx, x, y, scale, alpha, seed) {
+    ctx.save();
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    ctx.translate(x, y);
+    const R = 11 * scale;
+    // corona ticks
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = 2;
+    for (let j = 0; j < 4; j++) {
+      const a = j * Math.PI / 2 + CLOCK.time * 2.4 + seed;
+      roughLine(ctx, Math.cos(a) * (R + 3), Math.sin(a) * (R + 3),
+        Math.cos(a) * (R + 9), Math.sin(a) * (R + 9), seed + j, 2.4);
+    }
+    // core
+    roughCirclePath(ctx, 0, 0, R, seed, 0.15, 10);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+    // glaring eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-R * 0.34, -R * 0.14, R * 0.2, 0, TAU);
+    ctx.arc(R * 0.34, -R * 0.14, R * 0.2, 0, TAU);
+    ctx.fill();
+    // scowl
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = R * 0.16;
+    ctx.beginPath();
+    ctx.moveTo(-R * 0.3, R * 0.4);
+    ctx.quadraticCurveTo(0, R * 0.14, R * 0.3, R * 0.4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   drawCutsceneHUD(ctx) {
     const w = this.w;
     const s = this.cs ? this.cs.stage : 0;
     const t = this.cs ? this.cs.t : 0;
+
+    // BROKEN MEMORIES titles
+    if (this.cs && this.cs.ritual === 2) {
+      let title = 'BROKEN MEMORIES';
+      if (s === 1) title = 'IT REMEMBERS';
+      else if (s === 2) title = '4 COPIES — ATTACK';
+      else if (s === 3) title = 'THE FIELD WAKES';
+      else if (s === 4) title = 'MAGNETAR ' + Math.min(99, Math.round(clamp(t / CS2_FIELD, 0, 1) * 100)) + '%';
+      doodleText(ctx, title, w / 2, 64, 13, 30, { color: 'rgba(0,0,0,0.85)' });
+      doodleText(ctx, 'R — skip', w - 18, this.h - 20, 97, 16, { align: 'right', color: 'rgba(0,0,0,0.45)', double: false });
+      return;
+    }
+
     let title = 'RELEASE';
     if (s === 0) title = 'THE STAR GOES HOME';
     else if (s === 1) title = 'IT HURTS — x' + (1 + t / CS_INFLATE).toFixed(1);
@@ -606,24 +1025,31 @@ class Game {
       ctx.restore();
     }
 
-    // released-cosmos tag
+    // released-cosmos tag (phase 3 upgrades it to MAGNETAR)
     if (this.released) {
-      doodleText(ctx, 'RELEASED', this.w - 62, 76, 47, 19, { align: 'center', color: 'rgba(0,0,0,0.55)' });
+      doodleText(ctx, this.magnetar ? 'MAGNETAR' : 'RELEASED', this.w - 62, 76, 47, 19, { align: 'center', color: 'rgba(0,0,0,0.55)' });
       ctx.save();
       ctx.setLineDash([4, 6]);
       ctx.strokeStyle = 'rgba(0,0,0,0.4)';
       ctx.lineWidth = 1.6;
       roughRect(ctx, this.w - 130, 62, 136, 28, 59, 2);
-      // tiny pulsar dot
+      // tiny pulsar dot (wrapped in a field loop as a magnetar)
       Player.pulsarIcon(ctx, this.w - 154, 76, 6 + Math.sin(CLOCK.time * 5) * 1);
+      if (this.magnetar) {
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.ellipse(this.w - 154, 76, 11 + Math.sin(CLOCK.time * 4) * 1.5, 7, 0, 0, TAU);
+        ctx.stroke();
+      }
       ctx.restore();
     }
 
-    // release is ready: turn R from retry into a finale
+    // a ritual is ready: turn R from retry into a finale
     if (this.releaseReady) {
       const blink = Math.floor(CLOCK.time * 2.2) % 2 === 0;
       if (blink) {
-        doodleText(ctx, 'R — RELEASE THE STAR', this.w / 2, 118, 31 + CLOCK.tick9 * 0.09, 26, {
+        const rTxt = this.released ? 'R — BROKEN MEMORIES' : 'R — RELEASE THE STAR';
+        doodleText(ctx, rTxt, this.w / 2, 118, 31 + CLOCK.tick9 * 0.09, 26, {
           color: 'rgba(0,0,0,0.9)', double: false
         });
         ctx.strokeStyle = 'rgba(0,0,0,0.5)';

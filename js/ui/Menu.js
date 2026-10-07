@@ -3,7 +3,7 @@
 /* ============================================================
    MENU — "alone star" still-life art object.
    • LEFT COLUMN: every button lives here — START, the SKIP
-     start-second picker (0–90s, persisted), the NOCLIP toggle,
+     start-second picker (0–150s, persisted), the NOCLIP toggle,
      and a HOW TO SURVIVE block right beneath them.
    • CENTRE-PIECE: a black hole is slowly pulling our star into
      it — she spirals in on a smear-trail, eyes going wide, until
@@ -15,7 +15,7 @@
      internal hatching runs around chaotically
    ============================================================ */
 
-const SKIP_MAX = 90;   // same as RELEASE_AT; skipping to 90 arms the release
+const SKIP_MAX = 150;  // same as MAGNETAR_AT; skipping to 150 chains BOTH rituals
 
 class Menu {
   constructor(game) {
@@ -201,7 +201,7 @@ class Menu {
     doodleText(ctx, this.startSec + 's', s.x + s.w / 2, s.y + 36, 101 + CLOCK.tick9 * 0.1, 26);
     ctx.restore();
 
-    // tiny ruler under the picker: taps = 0/30/60/90
+    // tiny ruler under the picker: taps every 30s up to SKIP_MAX
     const rl = L.ruler;
     ctx.save();
     ctx.strokeStyle = 'rgba(0,0,0,0.35)';
@@ -256,7 +256,8 @@ class Menu {
       'WASD · arrows — move · SPACE — parry',
       'P pause · ESC menu · N noclip',
       'R retry — at 90s it\'s RELEASE',
-      'SKIP — start from any second (0–90)'
+      'R at 150s — BROKEN MEMORIES',
+      'SKIP — start from any second (0–150)'
     ];
     for (let i = 0; i < lines.length; i++) {
       doodleText(ctx, lines[i], it.x + 2, it.y + 26 + i * 21, 17 + i * 7, 14, {
